@@ -1,4 +1,32 @@
-const TelegramBot = require('node-telegram-bot-api');
+async getTransactionDetails(txHash) {
+        try {
+            const response = await axios.get('https://api.etherscan.io/api', {
+                params: {
+                    module: 'proxy',
+                    action: 'eth_getTransactionByHash',
+                    txhash: txHash,
+                    apikey: ETHERSCAN_API_KEY
+                },
+                timeout: 10000
+            });
+            
+            if (response.data.result) {
+                const tx = response.data.result;
+                const gasPrice = parseInt(tx.gasPrice, 16);
+                const maxPriorityFee = tx.maxPriorityFeePerGas ? parseInt(tx.maxPriorityFeePerGas, 16) : 0;
+                
+                return {
+                    gasPrice: (gasPrice / 1e9).toFixed(1),
+                    priorityFee: (maxPriorityFee / 1e9).toFixed(1)
+                };
+            }
+            
+            return { gasPrice: 'N/A', priorityFee: '0' };
+        } catch (error) {
+            console.warn(`⚠️ Gas details failed for ${txHash}:`, error.message);
+            return { gasPrice: 'N/A', priorityFee: '0' };
+        }
+    }const TelegramBot = require('node-telegram-bot-api');
 const { ethers } = require('ethers');
 const axios = require('axios');
 const express = require('express');
@@ -41,7 +69,8 @@ app.get('/', (req, res) => {
 const ERC20_ABI = [
     "function decimals() external view returns (uint8)",
     "function symbol() external view returns (string)",
-    "function name() external view returns (string)"
+    "function name() external view returns (string)",
+    "function totalSupply() external view returns (uint256)"
 ];
 
 class SimpleTokenAnalyzer {
@@ -56,29 +85,40 @@ class SimpleTokenAnalyzer {
             // Méthode simple : lecture directe
             const contract = new ethers.Contract(contractAddress, ERC20_ABI, this.provider);
             
-            const [name, symbol, decimals] = await Promise.allSettled([
+            const [name, symbol, decimals, totalSupply] = await Promise.allSettled([
                 contract.name(),
                 contract.symbol(), 
-                contract.decimals()
+                contract.decimals(),
+                contract.totalSupply()
             ]);
 
             const tokenName = name.status === 'fulfilled' ? name.value : 'Unknown Token';
             const tokenSymbol = symbol.status === 'fulfilled' ? symbol.value : 'TOKEN';
             const tokenDecimals = decimals.status === 'fulfilled' ? Number(decimals.value) : 18;
+            const tokenTotalSupply = totalSupply.status === 'fulfilled' ? totalSupply.value : 0n;
+            
+            // Convertir la supply en nombre lisible
+            let readableSupply = 0;
+            if (tokenTotalSupply > 0n) {
+                readableSupply = parseFloat(ethers.formatUnits(tokenTotalSupply, tokenDecimals));
+            }
             
             console.log(`✅ Token: ${tokenName} (${tokenSymbol}) - ${tokenDecimals} decimals`);
+            console.log(`📊 Supply: ${readableSupply.toLocaleString('fr-FR')} ${tokenSymbol}`);
             
             return { 
                 name: tokenName, 
                 symbol: tokenSymbol, 
-                decimals: tokenDecimals 
+                decimals: tokenDecimals,
+                totalSupply: readableSupply
             };
         } catch (error) {
             console.error('❌ Erreur token info:', error.message);
             return {
                 name: 'Unknown Token',
                 symbol: 'TOKEN',
-                decimals: 18
+                decimals: 18,
+                totalSupply: 0
             };
         }
     }
@@ -148,19 +188,35 @@ class SimpleTokenAnalyzer {
                 
                 // Calcul simple du montant
                 let amount = 0;
+                let supplyPercent = 0;
                 try {
                     amount = parseFloat(ethers.formatUnits(tx.value, tokenInfo.decimals));
+                    
+                    // Calculer le % de supply si on a la supply totale
+                    if (tokenInfo.totalSupply > 0 && amount > 0) {
+                        supplyPercent = (amount / tokenInfo.totalSupply) * 100;
+                    }
                 } catch (error) {
                     console.warn(`⚠️ Erreur montant ${tx.hash}:`, error.message);
                     amount = 0;
+                    supplyPercent = 0;
+                }
+                
+                // Récupérer les détails gas pour les 15 premiers
+                let gasDetails = { gasPrice: 'N/A', priorityFee: '0' };
+                if (results.length < 15) {
+                    gasDetails = await this.getTransactionDetails(tx.hash);
                 }
                 
                 results.push({
                     rank: results.length + 1,
                     wallet: tx.to,
                     amount: amount,
+                    supplyPercent: supplyPercent,
                     txHash: tx.hash,
-                    timestamp: new Date(parseInt(tx.timeStamp) * 1000)
+                    timestamp: new Date(parseInt(tx.timeStamp) * 1000),
+                    gasPrice: gasDetails.gasPrice,
+                    priorityFee: gasDetails.priorityFee
                 });
 
                 console.log(`✅ Acheteur #${results.length}: ${tx.to} = ${amount} ${tokenInfo.symbol}`);
@@ -182,6 +238,12 @@ class SimpleTokenAnalyzer {
         
         let message = `🪙 **${tokenInfo.name} (${tokenInfo.symbol})**\n\n`;
         message += `📊 **${buyers.length} premiers acheteurs**\n`;
+        
+        // Afficher la supply totale si disponible
+        if (tokenInfo.totalSupply > 0) {
+            message += `📈 **Supply totale:** ${tokenInfo.totalSupply.toLocaleString('fr-FR', {maximumFractionDigits: 0})} ${tokenInfo.symbol}\n`;
+        }
+        
         message += `📝 [Contrat](https://etherscan.io/token/${contractAddress})\n\n`;
 
         // Limiter à 10 pour éviter les messages trop longs
@@ -191,7 +253,27 @@ class SimpleTokenAnalyzer {
             const shortAddr = `${buyer.wallet.slice(0, 6)}...${buyer.wallet.slice(-4)}`;
             
             message += `**${buyer.rank}.** [${shortAddr}](https://etherscan.io/address/${buyer.wallet})\n`;
-            message += `   💰 ${buyer.amount.toLocaleString('fr-FR', {maximumFractionDigits: 0})} ${tokenInfo.symbol}\n`;
+            message += `   💰 ${buyer.amount.toLocaleString('fr-FR', {maximumFractionDigits: 0})} ${tokenInfo.symbol}`;
+            
+            // Ajouter le pourcentage de supply si disponible
+            if (buyer.supplyPercent > 0) {
+                if (buyer.supplyPercent >= 0.01) {
+                    message += ` **(${buyer.supplyPercent.toFixed(2)}% supply)**`;
+                } else {
+                    message += ` **(${buyer.supplyPercent.toFixed(4)}% supply)**`;
+                }
+            }
+            message += '\n';
+            
+            // Affichage du gas
+            if (buyer.gasPrice && buyer.gasPrice !== 'N/A') {
+                message += `   ⛽ ${buyer.gasPrice} Gwei`;
+                if (parseFloat(buyer.priorityFee) > 0) {
+                    message += ` (tip: +${buyer.priorityFee})`;
+                }
+                message += '\n';
+            }
+            
             message += `   🕒 ${buyer.timestamp.toLocaleString('fr-FR')}\n`;
             message += `   🔗 [TX](https://etherscan.io/tx/${buyer.txHash})\n\n`;
         });
@@ -199,6 +281,8 @@ class SimpleTokenAnalyzer {
         if (buyers.length > 10) {
             message += `\n📋 *Affichage des 10 premiers sur ${buyers.length} total*`;
         }
+        
+        message += `\n\n💡 *Note: "tip" = priority fee standard. Les vrais bribes MEV sont cachés via Flashbots.*`;
 
         return message;
     }
