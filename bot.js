@@ -247,7 +247,7 @@ class SimpleTokenAnalyzer {
         // Add timestamp and block of first trade
         if (buyers.length > 0) {
             message += `📅 **Trading Started:** ${buyers[0].timestamp.toLocaleString('en-US')}\n`;
-            message += `🧱 **Block:** [${buyers[0].blockNumber}](https://etherscan.io/block/${buyers[0].blockNumber})\n`;
+            message += `🧱 **Block:** [${buyers[0].blockNumber}](https://etherscan.io/txs?block/${buyers[0].blockNumber})\n`;
         }
         
         message += `📝 [Contract](https://etherscan.io/token/${contractAddress})\n\n`;
