@@ -73,13 +73,23 @@ class TokenAnalyzer {
 
     async getTokenInfo(contractAddress) {
         try {
-            // Essayer d'abord avec Etherscan API pour avoir les infos
-            const etherscanUrl = `https://api.etherscan.io/api?module=token&action=tokeninfo&contractaddress=${contractAddress}&apikey=${ETHERSCAN_API_KEY}`;
+            // Essayer plusieurs méthodes pour obtenir les infos du token
             
+            // 1. Essayer l'API Etherscan pour les tokens vérifiés
+            const etherscanUrl = `https://api.etherscan.io/api`;
             try {
-                const response = await axios.get(etherscanUrl);
+                const response = await axios.get(etherscanUrl, {
+                    params: {
+                        module: 'token',
+                        action: 'tokeninfo',
+                        contractaddress: contractAddress,
+                        apikey: ETHERSCAN_API_KEY
+                    }
+                });
+                
                 if (response.data.status === '1' && response.data.result && response.data.result.length > 0) {
                     const tokenData = response.data.result[0];
+                    console.log('✅ Token info from Etherscan:', tokenData);
                     return {
                         name: tokenData.tokenName || 'Unknown Token',
                         symbol: tokenData.symbol || 'UNKNOWN',
@@ -87,22 +97,58 @@ class TokenAnalyzer {
                     };
                 }
             } catch (etherscanError) {
-                console.log('Etherscan failed, trying contract directly...');
+                console.log('⚠️ Etherscan token API failed, trying contract...');
             }
 
-            // Si Etherscan échoue, essayer le contrat directement
+            // 2. Essayer de lire directement le contrat
             const contract = new ethers.Contract(contractAddress, ERC20_ABI, this.provider);
             
-            const [name, symbol, decimals] = await Promise.all([
-                contract.name().catch(() => 'Unknown Token'),
-                contract.symbol().catch(() => 'UNKNOWN'),
-                contract.decimals().catch(() => 18)
-            ]);
+            try {
+                const [name, symbol, decimals] = await Promise.all([
+                    contract.name().catch(() => 'Unknown Token'),
+                    contract.symbol().catch(() => 'UNKNOWN'),
+                    contract.decimals().catch(() => 18)
+                ]);
 
-            return { name, symbol, decimals: Number(decimals) };
+                console.log('✅ Token info from contract:', { name, symbol, decimals: Number(decimals) });
+                return { 
+                    name: name || 'Unknown Token', 
+                    symbol: symbol || 'UNKNOWN', 
+                    decimals: Number(decimals) || 18 
+                };
+            } catch (contractError) {
+                console.log('⚠️ Contract read failed');
+            }
+
+            // 3. Fallback : essayer via les logs de création du contrat
+            try {
+                const creationLogs = await this.provider.getLogs({
+                    address: contractAddress,
+                    fromBlock: 'earliest',
+                    toBlock: 'latest',
+                    topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'] // Transfer topic
+                });
+                
+                if (creationLogs.length > 0) {
+                    console.log('✅ Token has transfer logs, assume ERC20');
+                    return {
+                        name: 'New Token',
+                        symbol: 'NEW',
+                        decimals: 18
+                    };
+                }
+            } catch (logError) {
+                console.log('⚠️ Log search failed');
+            }
+
+            // Dernier recours
+            return {
+                name: 'Unknown Token',
+                symbol: 'UNKNOWN',
+                decimals: 18
+            };
         } catch (error) {
-            console.error('Erreur info token:', error);
-            // Retourner des valeurs par défaut
+            console.error('❌ Erreur complete token info:', error);
             return {
                 name: 'Unknown Token',
                 symbol: 'UNKNOWN',
@@ -195,10 +241,30 @@ class TokenAnalyzer {
         const buyers = new Map();
         const results = [];
 
+        // Adresses à ignorer (LP, routers, bridges communs)
+        const ignoredAddresses = new Set([
+            '0x7a250d5630b4cf539739df2c5dacb4c659f2488d', // Uniswap V2 Router
+            '0xe592427a0aece92de3edee1f18e0157c05861564', // Uniswap V3 Router
+            '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45', // Uniswap V3 Router 2
+            '0x1111111254eeb25477b68fb85ed929f73a960582', // 1inch
+            '0xdef1c0ded9bec7f1a1670819833240f027b25eff', // 0x Protocol
+            contractAddress.toLowerCase() // Le contrat lui-même
+        ]);
+
         for (const tx of transactions) {
+            // Ignorer les mints depuis 0x0
             if (tx.from === '0x0000000000000000000000000000000000000000') continue;
             
             const buyerAddress = tx.to.toLowerCase();
+            
+            // Ignorer les adresses de LP/DEX/Routers
+            if (ignoredAddresses.has(buyerAddress)) continue;
+            
+            // Vérifier si c'est un contrat (heuristique simple)
+            if (await this.isContract(buyerAddress)) {
+                console.log(`⚠️ Ignoré contrat: ${buyerAddress}`);
+                continue;
+            }
             
             if (!buyers.has(buyerAddress)) {
                 buyers.set(buyerAddress, true);
@@ -206,21 +272,23 @@ class TokenAnalyzer {
                 // Calculer la quantité avec les bonnes décimales
                 let amount;
                 try {
-                    amount = parseFloat(ethers.formatUnits(tx.value, tokenInfo.decimals));
+                    // Convertir le montant avec les vraies décimales
+                    const rawAmount = ethers.formatUnits(tx.value, tokenInfo.decimals);
+                    amount = parseFloat(rawAmount);
                 } catch (error) {
-                    // Si erreur de formatage, essayer avec 18 décimales par défaut
-                    amount = parseFloat(ethers.formatUnits(tx.value, 18));
+                    console.warn(`⚠️ Erreur conversion montant pour ${tx.hash}:`, error);
+                    amount = 0;
                 }
                 
-                // Ne récupérer les détails que pour les premiers (pour économiser les appels API)
+                // Ne récupérer les détails gas que pour les premiers
                 let txDetails = { gasPrice: 'N/A', priorityFee: '0' };
-                if (results.length < 20) { // Seulement pour les 20 premiers
+                if (results.length < 15) {
                     txDetails = await this.getTransactionDetails(tx.hash);
                 }
                 
                 results.push({
                     rank: results.length + 1,
-                    wallet: tx.to, // Adresse complète, pas en minuscules
+                    wallet: tx.to, // Adresse complète
                     amount: amount,
                     txHash: tx.hash,
                     blockNumber: parseInt(tx.blockNumber),
@@ -236,6 +304,16 @@ class TokenAnalyzer {
         return { tokenInfo, buyers: results, contractAddress };
     }
 
+    // Fonction pour vérifier si une adresse est un contrat
+    async isContract(address) {
+        try {
+            const code = await this.provider.getCode(address);
+            return code !== '0x';
+        } catch (error) {
+            return false;
+        }
+    }
+
     formatResults(data, range = '1-50') {
         const { tokenInfo, buyers, contractAddress } = data;
         
@@ -249,16 +327,23 @@ class TokenAnalyzer {
             const shortAddress = `${fullAddress.slice(0, 6)}...${fullAddress.slice(-4)}`;
             
             message += `**${buyer.rank}.** [${shortAddress}](https://etherscan.io/address/${fullAddress})\n`;
-            message += `   💰 ${buyer.amount.toLocaleString('fr-FR', {maximumFractionDigits: 3})} ${tokenInfo.symbol}\n`;
-            message += `   ⛽ ${buyer.gasPrice} Gwei`;
+            message += `   💰 ${buyer.amount.toLocaleString('fr-FR', {maximumFractionDigits: 0})} ${tokenInfo.symbol}\n`;
             
-            if (parseFloat(buyer.priorityFee) > 0) {
-                message += ` (+${buyer.priorityFee} bribe)`;
+            // Affichage du gas (sans confusion avec bribe)
+            if (buyer.gasPrice !== 'N/A') {
+                message += `   ⛽ ${buyer.gasPrice} Gwei`;
+                if (parseFloat(buyer.priorityFee) > 0) {
+                    message += ` (tip: +${buyer.priorityFee})`;
+                }
+            } else {
+                message += `   ⛽ Gas info non disponible`;
             }
             
             message += `\n   🕒 ${buyer.timestamp.toLocaleString('fr-FR')}\n`;
             message += `   🔗 [Transaction](https://etherscan.io/tx/${buyer.txHash})\n\n`;
         });
+
+        message += `\n💡 *Note: Les vrais "bribes" MEV ne sont pas visibles ici car ils sont envoyés via Flashbots ou transfers directs aux validators.*`;
 
         return message;
     }
