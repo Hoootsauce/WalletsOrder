@@ -8,9 +8,9 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ETHEREUM_RPC_URL = process.env.ETHEREUM_RPC_URL;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
 
-// Vérification
+// Verification
 if (!TELEGRAM_BOT_TOKEN || !ETHEREUM_RPC_URL || !ETHERSCAN_API_KEY) {
-    console.error('❌ Variables manquantes!');
+    console.error('❌ Missing environment variables!');
     process.exit(1);
 }
 
@@ -31,9 +31,9 @@ app.post(`/bot${TELEGRAM_BOT_TOKEN}`, (req, res) => {
 
 app.get('/', (req, res) => {
     res.send(`
-        <h1>🤖 Bot Token Analyzer</h1>
-        <p>✅ Bot actif</p>
-        <p>⏰ ${new Date().toLocaleString('fr-FR')}</p>
+        <h1>🤖 Token Analyzer Bot</h1>
+        <p>✅ Bot is active</p>
+        <p>⏰ ${new Date().toLocaleString('en-US')}</p>
     `);
 });
 
@@ -52,9 +52,9 @@ class SimpleTokenAnalyzer {
 
     async getTokenInfo(contractAddress) {
         try {
-            console.log(`🔍 Token info pour: ${contractAddress}`);
+            console.log(`🔍 Getting token info for: ${contractAddress}`);
             
-            // Méthode simple : lecture directe
+            // Simple method: direct reading
             const contract = new ethers.Contract(contractAddress, ERC20_ABI, this.provider);
             
             const [name, symbol, decimals, totalSupply] = await Promise.allSettled([
@@ -69,14 +69,14 @@ class SimpleTokenAnalyzer {
             const tokenDecimals = decimals.status === 'fulfilled' ? Number(decimals.value) : 18;
             const tokenTotalSupply = totalSupply.status === 'fulfilled' ? totalSupply.value : 0n;
             
-            // Convertir la supply en nombre lisible
+            // Convert supply to readable number
             let readableSupply = 0;
             if (tokenTotalSupply > 0n) {
                 readableSupply = parseFloat(ethers.formatUnits(tokenTotalSupply, tokenDecimals));
             }
             
             console.log(`✅ Token: ${tokenName} (${tokenSymbol}) - ${tokenDecimals} decimals`);
-            console.log(`📊 Supply: ${readableSupply.toLocaleString('fr-FR')} ${tokenSymbol}`);
+            console.log(`📊 Supply: ${readableSupply.toLocaleString('en-US')} ${tokenSymbol}`);
             
             return { 
                 name: tokenName, 
@@ -85,7 +85,7 @@ class SimpleTokenAnalyzer {
                 totalSupply: readableSupply
             };
         } catch (error) {
-            console.error('❌ Erreur token info:', error.message);
+            console.error('❌ Token info error:', error.message);
             return {
                 name: 'Unknown Token',
                 symbol: 'TOKEN',
@@ -127,7 +127,7 @@ class SimpleTokenAnalyzer {
 
     async getTokenTransactions(contractAddress) {
         try {
-            console.log(`📡 Récupération transactions...`);
+            console.log(`📡 Getting transactions...`);
             const response = await axios.get('https://api.etherscan.io/api', {
                 params: {
                     module: 'account',
@@ -142,44 +142,44 @@ class SimpleTokenAnalyzer {
             });
             
             if (response.data.status !== '1') {
-                throw new Error('Pas de transactions trouvées');
+                throw new Error('No transactions found');
             }
             
-            console.log(`✅ ${response.data.result.length} transactions trouvées`);
+            console.log(`✅ ${response.data.result.length} transactions found`);
             return response.data.result || [];
         } catch (error) {
-            console.error('❌ Erreur transactions:', error.message);
+            console.error('❌ Transactions error:', error.message);
             throw error;
         }
     }
 
     async analyzeFirstBuyers(contractAddress, limit = 50) {
-        console.log(`🚀 Début analyse ${contractAddress}`);
+        console.log(`🚀 Starting analysis ${contractAddress}`);
         
         const tokenInfo = await this.getTokenInfo(contractAddress);
         const transactions = await this.getTokenTransactions(contractAddress);
         
         if (transactions.length === 0) {
-            throw new Error('Aucune transaction trouvée');
+            throw new Error('No transactions found');
         }
 
         const buyers = new Map();
         const results = [];
 
-        // Ignorer seulement les adresses vraiment évidentes
+        // Skip only really obvious addresses
         const skipAddresses = new Set([
             '0x7a250d5630b4cf539739df2c5dacb4c659f2488d', // Uniswap V2
             '0xe592427a0aece92de3edee1f18e0157c05861564', // Uniswap V3
-            contractAddress.toLowerCase() // Le contrat lui-même
+            contractAddress.toLowerCase() // The contract itself
         ]);
 
         for (const tx of transactions) {
-            // Skip les mints
+            // Skip mints
             if (tx.from === '0x0000000000000000000000000000000000000000') continue;
             
             const buyerAddress = tx.to.toLowerCase();
             
-            // Skip seulement les vrais routers
+            // Skip only real routers
             if (skipAddresses.has(buyerAddress)) {
                 console.log(`⚠️ Skip router: ${buyerAddress}`);
                 continue;
@@ -188,27 +188,27 @@ class SimpleTokenAnalyzer {
             if (!buyers.has(buyerAddress)) {
                 buyers.set(buyerAddress, true);
                 
-                // Calcul simple du montant
+                // Simple amount calculation
                 let amount = 0;
                 let supplyPercent = 0;
                 try {
                     amount = parseFloat(ethers.formatUnits(tx.value, tokenInfo.decimals));
                     
-                    // Calculer le % de supply si on a la supply totale
+                    // Calculate supply % if we have total supply
                     if (tokenInfo.totalSupply > 0 && amount > 0) {
                         supplyPercent = (amount / tokenInfo.totalSupply) * 100;
                     }
                 } catch (error) {
-                    console.warn(`⚠️ Erreur montant ${tx.hash}:`, error.message);
+                    console.warn(`⚠️ Amount error ${tx.hash}:`, error.message);
                     amount = 0;
                     supplyPercent = 0;
                 }
                 
-                // Récupérer les détails gas pour les 15 premiers
-                let gasDetails = { gasPrice: 'N/A', priorityFee: '0' };
-                if (results.length < 15) {
-                    gasDetails = await this.getTransactionDetails(tx.hash);
-                }
+                // Gas details for first 15 (optional now)
+                // let gasDetails = { gasPrice: 'N/A', priorityFee: '0' };
+                // if (results.length < 15) {
+                //     gasDetails = await this.getTransactionDetails(tx.hash);
+                // }
                 
                 results.push({
                     rank: results.length + 1,
@@ -216,48 +216,51 @@ class SimpleTokenAnalyzer {
                     amount: amount,
                     supplyPercent: supplyPercent,
                     txHash: tx.hash,
-                    timestamp: new Date(parseInt(tx.timeStamp) * 1000),
-                    gasPrice: gasDetails.gasPrice,
-                    priorityFee: gasDetails.priorityFee
+                    timestamp: new Date(parseInt(tx.timeStamp) * 1000)
                 });
 
-                console.log(`✅ Acheteur #${results.length}: ${tx.to} = ${amount.toLocaleString()} ${tokenInfo.symbol} (${supplyPercent.toFixed(2)}%)`);
+                console.log(`✅ Buyer #${results.length}: ${tx.to} = ${amount.toLocaleString()} ${tokenInfo.symbol} (${supplyPercent.toFixed(2)}%)`);
 
                 if (results.length >= limit) break;
             }
         }
 
         if (results.length === 0) {
-            throw new Error('Aucun acheteur trouvé');
+            throw new Error('No buyers found');
         }
 
-        console.log(`🎯 ${results.length} acheteurs trouvés`);
+        console.log(`🎯 ${results.length} buyers found`);
         return { tokenInfo, buyers: results, contractAddress };
     }
 
-    formatResults(data) {
+    formatResults(data, startRank = 1, endRank = 10) {
         const { tokenInfo, buyers, contractAddress } = data;
         
         let message = `🪙 **${tokenInfo.name} (${tokenInfo.symbol})**\n\n`;
-        message += `📊 **${buyers.length} premiers acheteurs**\n`;
         
-        // Afficher la supply totale si disponible
+        // Display total supply if available
         if (tokenInfo.totalSupply > 0) {
-            message += `📈 **Supply totale:** ${tokenInfo.totalSupply.toLocaleString('fr-FR', {maximumFractionDigits: 0})} ${tokenInfo.symbol}\n`;
+            message += `📈 **Total Supply:** ${tokenInfo.totalSupply.toLocaleString('en-US', {maximumFractionDigits: 0})} ${tokenInfo.symbol}\n`;
         }
         
-        message += `📝 [Contrat](https://etherscan.io/token/${contractAddress})\n\n`;
+        // Add timestamp of first trade
+        if (buyers.length > 0) {
+            message += `📅 **Trading Started:** ${buyers[0].timestamp.toLocaleString('en-US')}\n`;
+        }
+        
+        message += `📝 [Contract](https://etherscan.io/token/${contractAddress})\n\n`;
+        message += `📊 **Buyers ${startRank}-${Math.min(endRank, buyers.length)} of ${buyers.length} total**\n\n`;
 
-        // Limiter à 10 pour éviter les messages trop longs
-        const displayBuyers = buyers.slice(0, 10);
+        // Select requested range
+        const displayBuyers = buyers.slice(startRank - 1, endRank);
 
         displayBuyers.forEach((buyer) => {
             const shortAddr = `${buyer.wallet.slice(0, 6)}...${buyer.wallet.slice(-4)}`;
             
             message += `**${buyer.rank}.** [${shortAddr}](https://etherscan.io/address/${buyer.wallet})\n`;
-            message += `   💰 ${buyer.amount.toLocaleString('fr-FR', {maximumFractionDigits: 0})} ${tokenInfo.symbol}`;
+            message += `   💰 ${buyer.amount.toLocaleString('en-US', {maximumFractionDigits: 0})} ${tokenInfo.symbol}`;
             
-            // Ajouter le pourcentage de supply si disponible
+            // Add supply percentage if available
             if (buyer.supplyPercent > 0) {
                 if (buyer.supplyPercent >= 0.01) {
                     message += ` **(${buyer.supplyPercent.toFixed(2)}% supply)**`;
@@ -267,24 +270,16 @@ class SimpleTokenAnalyzer {
             }
             message += '\n';
             
-            // Affichage du gas
-            if (buyer.gasPrice && buyer.gasPrice !== 'N/A') {
-                message += `   ⛽ ${buyer.gasPrice} Gwei`;
-                if (parseFloat(buyer.priorityFee) > 0) {
-                    message += ` (tip: +${buyer.priorityFee})`;
-                }
-                message += '\n';
-            }
-            
-            message += `   🕒 ${buyer.timestamp.toLocaleString('fr-FR')}\n`;
             message += `   🔗 [TX](https://etherscan.io/tx/${buyer.txHash})\n\n`;
         });
 
+        // Instructions to see other ranges
         if (buyers.length > 10) {
-            message += `\n📋 *Affichage des 10 premiers sur ${buyers.length} total*`;
+            message += `\n💡 **To see other buyers:**\n`;
+            message += `📋 Type: \`${contractAddress} 11-20\` to see buyers 11-20\n`;
+            message += `📋 Type: \`${contractAddress} 21-30\` to see buyers 21-30\n`;
+            message += `📋 etc...`;
         }
-        
-        message += `\n\n💡 *Note: "tip" = priority fee standard. Les vrais bribes MEV sont cachés via Flashbots.*`;
 
         return message;
     }
@@ -295,71 +290,81 @@ const analyzer = new SimpleTokenAnalyzer();
 // Commandes du bot
 bot.onText(/\/start/, (msg) => {
     const welcomeMessage = `
-🤖 **Analyseur de Tokens Ethereum**
+🤖 **Ethereum Token Analyzer**
 
-**Envoyez simplement l'adresse du contrat :**
-\`0x1234567890123456789012345678901234567890\`
+**Commands:**
+• \`0x1234...\` → First 10 buyers
+• \`0x1234... 11-20\` → Buyers 11-20  
+• \`0x1234... 21-30\` → Buyers 21-30
 
-⏱️ *Analyse en 1-2 minutes*
+⏱️ *Analysis takes 1-2 minutes*
     `;
     
     bot.sendMessage(msg.chat.id, welcomeMessage, { parse_mode: 'Markdown' });
 });
 
-// Analyser une adresse
-bot.onText(/^(0x[a-fA-F0-9]{40})$/, async (msg, match) => {
+// Analyze an address (with or without range)
+bot.onText(/^(0x[a-fA-F0-9]{40})(?:\s+(\d+)-(\d+))?$/, async (msg, match) => {
     const chatId = msg.chat.id;
     const contractAddress = match[1];
+    const startRank = match[2] ? parseInt(match[2]) : 1;
+    const endRank = match[3] ? parseInt(match[3]) : 10;
     
-    console.log(`📨 Demande d'analyse: ${contractAddress}`);
+    console.log(`📨 Analysis request: ${contractAddress} (${startRank}-${endRank})`);
     
     if (!ethers.isAddress(contractAddress)) {
-        bot.sendMessage(chatId, '❌ Adresse invalide');
+        bot.sendMessage(chatId, '❌ Invalid address');
+        return;
+    }
+
+    // Check if range is valid
+    if (startRank < 1 || endRank < startRank || endRank > 100) {
+        bot.sendMessage(chatId, '❌ Invalid range. Use: 1-10, 11-20, etc. (max 100)');
         return;
     }
 
     try {
         const loadingMsg = await bot.sendMessage(
             chatId, 
-            `🔍 Analyse en cours...\n⏳ Patientez 1-2 minutes`
+            `🔍 Analysis in progress...\n⏳ Getting buyers ${startRank}-${endRank}`
         );
         
-        const results = await analyzer.analyzeFirstBuyers(contractAddress, 50);
-        const message = analyzer.formatResults(results);
+        const results = await analyzer.analyzeFirstBuyers(contractAddress, Math.max(endRank, 50));
+        const message = analyzer.formatResults(results, startRank, endRank);
         
         await bot.deleteMessage(chatId, loadingMsg.message_id);
         
-        console.log(`📤 Envoi résultats (${message.length} chars)`);
+        console.log(`📤 Sending results ${startRank}-${endRank} (${message.length} chars)`);
         
         await bot.sendMessage(chatId, message, { 
             parse_mode: 'Markdown',
             disable_web_page_preview: true 
         });
         
-        console.log(`✅ Analyse terminée pour ${contractAddress}`);
+        console.log(`✅ Analysis completed for ${contractAddress} (${startRank}-${endRank})`);
         
     } catch (error) {
-        console.error('❌ Erreur analyse:', error.message);
-        bot.sendMessage(chatId, `❌ Erreur: ${error.message}`);
+        console.error('❌ Analysis error:', error.message);
+        bot.sendMessage(chatId, `❌ Error: ${error.message}`);
     }
 });
 
-// Gestion des erreurs
+// Error handling
 bot.on('error', (error) => {
-    console.error('❌ Erreur bot:', error.message);
+    console.error('❌ Bot error:', error.message);
 });
 
-// Démarrage serveur
+// Server startup
 app.listen(PORT, async () => {
-    console.log(`🚀 Serveur démarré sur le port ${PORT}`);
+    console.log(`🚀 Server started on port ${PORT}`);
     
     try {
         const webhookUrl = `https://${process.env.RENDER_EXTERNAL_HOSTNAME}/bot${TELEGRAM_BOT_TOKEN}`;
         await bot.setWebHook(webhookUrl);
         console.log(`✅ Webhook: ${webhookUrl}`);
     } catch (error) {
-        console.error('❌ Erreur webhook:', error.message);
+        console.error('❌ Webhook error:', error.message);
     }
     
-    console.log('🤖 Bot Simple prêt!');
+    console.log('🤖 Simple Bot ready!');
 });
