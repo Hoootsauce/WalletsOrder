@@ -216,7 +216,8 @@ class SimpleTokenAnalyzer {
                     amount: amount,
                     supplyPercent: supplyPercent,
                     txHash: tx.hash,
-                    timestamp: new Date(parseInt(tx.timeStamp) * 1000)
+                    timestamp: new Date(parseInt(tx.timeStamp) * 1000),
+                    blockNumber: parseInt(tx.blockNumber)
                 });
 
                 console.log(`✅ Buyer #${results.length}: ${tx.to} = ${amount.toLocaleString()} ${tokenInfo.symbol} (${supplyPercent.toFixed(2)}%)`);
@@ -243,9 +244,10 @@ class SimpleTokenAnalyzer {
             message += `📈 **Total Supply:** ${tokenInfo.totalSupply.toLocaleString('en-US', {maximumFractionDigits: 0})} ${tokenInfo.symbol}\n`;
         }
         
-        // Add timestamp of first trade
+        // Add timestamp and block of first trade
         if (buyers.length > 0) {
             message += `📅 **Trading Started:** ${buyers[0].timestamp.toLocaleString('en-US')}\n`;
+            message += `🧱 **Block:** [${buyers[0].blockNumber}](https://etherscan.io/block/${buyers[0].blockNumber})\n`;
         }
         
         message += `📝 [Contract](https://etherscan.io/token/${contractAddress})\n\n`;
