@@ -14,12 +14,50 @@ if (!TELEGRAM_BOT_TOKEN || !ETHEREUM_RPC_URL || !ETHERSCAN_API_KEY) {
     process.exit(1);
 }
 
-// Initialisation
-const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+// Initialisation en mode webhook (pas polling)
+const bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
 const provider = new ethers.JsonRpcProvider(ETHEREUM_RPC_URL);
 
-console.log('🤖 Bot Telegram démarré!');
-console.log('🔗 Connecté à Ethereum');
+// Configuration du serveur web pour les webhooks
+const express = require('express');
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.use(express.json());
+
+// Endpoint pour recevoir les messages de Telegram
+app.post(`/bot${TELEGRAM_BOT_TOKEN}`, (req, res) => {
+    bot.processUpdate(req.body);
+    res.sendStatus(200);
+});
+
+// Page d'accueil simple
+app.get('/', (req, res) => {
+    res.send(`
+        <h1>🤖 Bot Telegram Token Analyzer</h1>
+        <p>✅ Bot actif et fonctionnel</p>
+        <p>📱 Utilisez le bot sur Telegram</p>
+        <p>⏰ Dernière mise à jour: ${new Date().toLocaleString('fr-FR')}</p>
+    `);
+});
+
+// Démarrer le serveur
+app.listen(PORT, async () => {
+    console.log(`🚀 Serveur démarré sur le port ${PORT}`);
+    
+    // Configurer le webhook
+    const webhookUrl = `https://${process.env.RENDER_EXTERNAL_HOSTNAME}/bot${TELEGRAM_BOT_TOKEN}`;
+    
+    try {
+        await bot.setWebHook(webhookUrl);
+        console.log(`✅ Webhook configuré: ${webhookUrl}`);
+    } catch (error) {
+        console.error('❌ Erreur webhook:', error);
+    }
+    
+    console.log('🤖 Bot Telegram prêt!');
+    console.log('🔗 Connecté à Ethereum');
+});
 
 // ABI pour les contrats ERC-20
 const ERC20_ABI = [
@@ -288,7 +326,8 @@ bot.onText(/^(0x[a-fA-F0-9]{40})$|^\/analyze (0x[a-fA-F0-9]{40})/, async (msg, m
 });
 
 // Gestion des erreurs
-bot.on('error', console.error);
-bot.on('polling_error', console.error);
+bot.on('error', (error) => {
+    console.error('❌ Erreur bot:', error);
+});
 
-console.log('✅ Bot prêt à analyser les tokens!');
+console.log('✅ Bot configuré et prêt à analyser les tokens!');
