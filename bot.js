@@ -368,5 +368,19 @@ app.listen(PORT, async () => {
         console.error('❌ Webhook error:', error.message);
     }
     
-    console.log('🤖 Simple Bot ready!');
+    // Keep-alive system to prevent Render from sleeping
+    const keepAlive = () => {
+        const url = `https://${process.env.RENDER_EXTERNAL_HOSTNAME}`;
+        console.log(`🏓 Keep-alive ping to ${url}`);
+        
+        axios.get(url)
+            .then(() => console.log('✅ Keep-alive successful'))
+            .catch(err => console.log('⚠️ Keep-alive failed:', err.message));
+    };
+    
+    // Ping every 10 minutes (600,000ms)
+    setInterval(keepAlive, 10 * 60 * 1000);
+    console.log('🔄 Keep-alive system activated (ping every 10 minutes)');
+    
+    console.log('🤖 Bot ready and will stay awake!');
 });
