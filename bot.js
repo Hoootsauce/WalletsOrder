@@ -35,18 +35,41 @@ class TokenAnalyzer {
 
     async getTokenInfo(contractAddress) {
         try {
+            // Essayer d'abord avec Etherscan API pour avoir les infos
+            const etherscanUrl = `https://api.etherscan.io/api?module=token&action=tokeninfo&contractaddress=${contractAddress}&apikey=${ETHERSCAN_API_KEY}`;
+            
+            try {
+                const response = await axios.get(etherscanUrl);
+                if (response.data.status === '1' && response.data.result && response.data.result.length > 0) {
+                    const tokenData = response.data.result[0];
+                    return {
+                        name: tokenData.tokenName || 'Unknown Token',
+                        symbol: tokenData.symbol || 'UNKNOWN',
+                        decimals: parseInt(tokenData.divisor) || 18
+                    };
+                }
+            } catch (etherscanError) {
+                console.log('Etherscan failed, trying contract directly...');
+            }
+
+            // Si Etherscan échoue, essayer le contrat directement
             const contract = new ethers.Contract(contractAddress, ERC20_ABI, this.provider);
             
             const [name, symbol, decimals] = await Promise.all([
-                contract.name().catch(() => 'Unknown'),
-                contract.symbol().catch(() => 'Unknown'),
+                contract.name().catch(() => 'Unknown Token'),
+                contract.symbol().catch(() => 'UNKNOWN'),
                 contract.decimals().catch(() => 18)
             ]);
 
-            return { name, symbol, decimals };
+            return { name, symbol, decimals: Number(decimals) };
         } catch (error) {
             console.error('Erreur info token:', error);
-            return null;
+            // Retourner des valeurs par défaut
+            return {
+                name: 'Unknown Token',
+                symbol: 'UNKNOWN',
+                decimals: 18
+            };
         }
     }
 
@@ -78,21 +101,42 @@ class TokenAnalyzer {
 
     async getTransactionDetails(txHash) {
         try {
-            const tx = await this.provider.getTransaction(txHash);
-            const receipt = await this.provider.getTransactionReceipt(txHash);
+            // Récupérer les détails via Etherscan API (plus fiable)
+            const url = `https://api.etherscan.io/api`;
+            const params = {
+                module: 'proxy',
+                action: 'eth_getTransactionByHash',
+                txhash: txHash,
+                apikey: ETHERSCAN_API_KEY
+            };
+
+            const response = await axios.get(url, { params });
             
-            if (!tx || !receipt) {
-                return { gasPrice: '0', gasUsed: '0', priorityFee: '0' };
+            if (response.data.result) {
+                const tx = response.data.result;
+                const gasPrice = parseInt(tx.gasPrice, 16);
+                const maxPriorityFee = tx.maxPriorityFeePerGas ? parseInt(tx.maxPriorityFeePerGas, 16) : 0;
+                
+                return {
+                    gasPrice: (gasPrice / 1e9).toFixed(1), // Convertir en Gwei
+                    priorityFee: (maxPriorityFee / 1e9).toFixed(1)
+                };
             }
             
-            return {
-                gasPrice: ethers.formatUnits(tx.gasPrice || 0, 'gwei'),
-                gasUsed: receipt.gasUsed.toString(),
-                priorityFee: tx.maxPriorityFeePerGas ? 
-                    ethers.formatUnits(tx.maxPriorityFeePerGas, 'gwei') : '0'
-            };
+            // Fallback vers provider direct
+            const tx = await this.provider.getTransaction(txHash);
+            if (tx && tx.gasPrice) {
+                return {
+                    gasPrice: ethers.formatUnits(tx.gasPrice, 'gwei'),
+                    priorityFee: tx.maxPriorityFeePerGas ? 
+                        ethers.formatUnits(tx.maxPriorityFeePerGas, 'gwei') : '0'
+                };
+            }
+            
+            return { gasPrice: 'N/A', priorityFee: '0' };
         } catch (error) {
-            return { gasPrice: '0', gasUsed: '0', priorityFee: '0' };
+            console.error('Erreur transaction details:', error);
+            return { gasPrice: 'N/A', priorityFee: '0' };
         }
     }
 
@@ -121,13 +165,25 @@ class TokenAnalyzer {
             if (!buyers.has(buyerAddress)) {
                 buyers.set(buyerAddress, true);
                 
-                const txDetails = await this.getTransactionDetails(tx.hash);
-                const amount = ethers.formatUnits(tx.value, tokenInfo.decimals);
+                // Calculer la quantité avec les bonnes décimales
+                let amount;
+                try {
+                    amount = parseFloat(ethers.formatUnits(tx.value, tokenInfo.decimals));
+                } catch (error) {
+                    // Si erreur de formatage, essayer avec 18 décimales par défaut
+                    amount = parseFloat(ethers.formatUnits(tx.value, 18));
+                }
+                
+                // Ne récupérer les détails que pour les premiers (pour économiser les appels API)
+                let txDetails = { gasPrice: 'N/A', priorityFee: '0' };
+                if (results.length < 20) { // Seulement pour les 20 premiers
+                    txDetails = await this.getTransactionDetails(tx.hash);
+                }
                 
                 results.push({
                     rank: results.length + 1,
-                    wallet: buyerAddress,
-                    amount: parseFloat(amount),
+                    wallet: tx.to, // Adresse complète, pas en minuscules
+                    amount: amount,
                     txHash: tx.hash,
                     blockNumber: parseInt(tx.blockNumber),
                     timestamp: new Date(parseInt(tx.timeStamp) * 1000),
@@ -147,16 +203,23 @@ class TokenAnalyzer {
         
         let message = `🪙 **${tokenInfo.name} (${tokenInfo.symbol})**\n\n`;
         message += `📊 **Top ${buyers.length} premiers acheteurs**\n`;
-        message += `📝 \`${contractAddress}\`\n\n`;
+        message += `📝 [Contrat sur Etherscan](https://etherscan.io/token/${contractAddress})\n\n`;
 
         buyers.forEach((buyer) => {
-            message += `**${buyer.rank}.** \`${buyer.wallet.slice(0, 6)}...${buyer.wallet.slice(-4)}\`\n`;
-            message += `   💰 ${buyer.amount.toLocaleString()} ${tokenInfo.symbol}\n`;
-            message += `   ⛽ ${parseFloat(buyer.gasPrice).toFixed(1)} Gwei`;
+            // Adresse complète avec lien cliquable
+            const fullAddress = buyer.wallet;
+            const shortAddress = `${fullAddress.slice(0, 6)}...${fullAddress.slice(-4)}`;
+            
+            message += `**${buyer.rank}.** [${shortAddress}](https://etherscan.io/address/${fullAddress})\n`;
+            message += `   💰 ${buyer.amount.toLocaleString('fr-FR', {maximumFractionDigits: 3})} ${tokenInfo.symbol}\n`;
+            message += `   ⛽ ${buyer.gasPrice} Gwei`;
+            
             if (parseFloat(buyer.priorityFee) > 0) {
-                message += ` (+${parseFloat(buyer.priorityFee).toFixed(1)} bribe)`;
+                message += ` (+${buyer.priorityFee} bribe)`;
             }
-            message += `\n   🕒 ${buyer.timestamp.toLocaleString('fr-FR')}\n\n`;
+            
+            message += `\n   🕒 ${buyer.timestamp.toLocaleString('fr-FR')}\n`;
+            message += `   🔗 [Transaction](https://etherscan.io/tx/${buyer.txHash})\n\n`;
         });
 
         return message;
