@@ -1,32 +1,4 @@
-async getTransactionDetails(txHash) {
-        try {
-            const response = await axios.get('https://api.etherscan.io/api', {
-                params: {
-                    module: 'proxy',
-                    action: 'eth_getTransactionByHash',
-                    txhash: txHash,
-                    apikey: ETHERSCAN_API_KEY
-                },
-                timeout: 10000
-            });
-            
-            if (response.data.result) {
-                const tx = response.data.result;
-                const gasPrice = parseInt(tx.gasPrice, 16);
-                const maxPriorityFee = tx.maxPriorityFeePerGas ? parseInt(tx.maxPriorityFeePerGas, 16) : 0;
-                
-                return {
-                    gasPrice: (gasPrice / 1e9).toFixed(1),
-                    priorityFee: (maxPriorityFee / 1e9).toFixed(1)
-                };
-            }
-            
-            return { gasPrice: 'N/A', priorityFee: '0' };
-        } catch (error) {
-            console.warn(`⚠️ Gas details failed for ${txHash}:`, error.message);
-            return { gasPrice: 'N/A', priorityFee: '0' };
-        }
-    }const TelegramBot = require('node-telegram-bot-api');
+const TelegramBot = require('node-telegram-bot-api');
 const { ethers } = require('ethers');
 const axios = require('axios');
 const express = require('express');
@@ -120,6 +92,36 @@ class SimpleTokenAnalyzer {
                 decimals: 18,
                 totalSupply: 0
             };
+        }
+    }
+
+    async getTransactionDetails(txHash) {
+        try {
+            const response = await axios.get('https://api.etherscan.io/api', {
+                params: {
+                    module: 'proxy',
+                    action: 'eth_getTransactionByHash',
+                    txhash: txHash,
+                    apikey: ETHERSCAN_API_KEY
+                },
+                timeout: 10000
+            });
+            
+            if (response.data.result) {
+                const tx = response.data.result;
+                const gasPrice = parseInt(tx.gasPrice, 16);
+                const maxPriorityFee = tx.maxPriorityFeePerGas ? parseInt(tx.maxPriorityFeePerGas, 16) : 0;
+                
+                return {
+                    gasPrice: (gasPrice / 1e9).toFixed(1),
+                    priorityFee: (maxPriorityFee / 1e9).toFixed(1)
+                };
+            }
+            
+            return { gasPrice: 'N/A', priorityFee: '0' };
+        } catch (error) {
+            console.warn(`⚠️ Gas details failed for ${txHash}:`, error.message);
+            return { gasPrice: 'N/A', priorityFee: '0' };
         }
     }
 
@@ -219,7 +221,7 @@ class SimpleTokenAnalyzer {
                     priorityFee: gasDetails.priorityFee
                 });
 
-                console.log(`✅ Acheteur #${results.length}: ${tx.to} = ${amount} ${tokenInfo.symbol}`);
+                console.log(`✅ Acheteur #${results.length}: ${tx.to} = ${amount.toLocaleString()} ${tokenInfo.symbol} (${supplyPercent.toFixed(2)}%)`);
 
                 if (results.length >= limit) break;
             }
