@@ -322,11 +322,15 @@ class SimpleTokenAnalyzer {
         
         // Show bundle detection info
         if (bundledBuyers.length > 1) {
+            // Calculate total supply bundled
+            const totalBundledSupply = bundledBuyers.reduce((sum, buyer) => sum + buyer.supplyPercent, 0);
+            
             message += `⚠️ **BUNDLE DETECTED:** ${bundledBuyers.length} wallets (ranks 1-${bundleEndRank})\n`;
+            message += `🎒 **Bundled Supply:** ${totalBundledSupply.toFixed(2)}% of total supply\n`;
             if (snipingBuyers.length > 0) {
                 message += `🎯 **First bribe at rank ${bundleEndRank + 1}** - bundle ends here\n`;
             }
-            message += `🤖 **Coordinated launch confirmed**\n\n`;
+            message += `🤖 **Bundled launch confirmed**\n\n`;
         }
 
         // Select requested range from ALL buyers (bundled + snipers)
