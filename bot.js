@@ -112,7 +112,7 @@ class SimpleTokenAnalyzer {
                 const internalTxs = response.data.result;
                 let totalBribe = 0;
                 
-                // Known addresses that are NOT bribes (normal DeFi operations)
+                // Known addresses that are NOT bribes (normal DeFi operations + MEV bots)
                 const legitimateAddresses = new Set([
                     '0x7a250d5630b4cf539739df2c5dacb4c659f2488d', // Uniswap V2 Router
                     '0xe592427a0aece92de3edee1f18e0157c05861564', // Uniswap V3 Router
@@ -120,7 +120,11 @@ class SimpleTokenAnalyzer {
                     '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', // WETH
                     '0xa0b86a33e6dd3d49f8c5c31c1ed1c5478d9fc59f', // WETH9
                     '0x1111111254eeb25477b68fb85ed929f73a960582', // 1inch
-                    '0xdef1c0ded9bec7f1a1670819833240f027b25eff'  // 0x Protocol
+                    '0xdef1c0ded9bec7f1a1670819833240f027b25eff', // 0x Protocol
+                    '0x3328f7f4a1d1c57c35df56bbf0c9dcafca309c49', // Banana Gun Router
+                    '0x00000000a991c429ee2ec6df19d40fe0c80088b8', // Banana Gun Router 2
+                    '0x37a8f295612602f2774d331e562be9e61b83a327', // Maestro Router
+                    '0x6131b5fae19ea4f9d964eac0408e4408b66337b5'  // BonkBot Router
                 ]);
                 
                 for (const tx of internalTxs) {
@@ -130,30 +134,41 @@ class SimpleTokenAnalyzer {
                     const toAddress = tx.to.toLowerCase();
                     const fromAddress = tx.from.toLowerCase();
                     
-                    // Skip normal DeFi operations (swaps, deposits, etc.)
+                    // Skip normal DeFi operations (swaps, deposits, etc.) and MEV bots
                     if (legitimateAddresses.has(toAddress) || legitimateAddresses.has(fromAddress)) {
                         continue;
                     }
                     
-                    // Skip transactions between known contracts
-                    if (tx.type === 'call' && (toAddress.startsWith('0xc02aaa') || toAddress.includes('uniswap'))) {
+                    // Skip transactions between known contracts and MEV bot interactions
+                    if (tx.type === 'call' && (
+                        toAddress.startsWith('0xc02aaa') || 
+                        toAddress.includes('uniswap') ||
+                        toAddress.includes('3328f7f4') || // Banana Gun patterns
+                        fromAddress.includes('3328f7f4')
+                    )) {
                         continue;
                     }
                     
-                    // Check if it's a potential bribe (ETH to unknown EOA or builder)
+                    // Check if it's a potential bribe (ETH to validator/builder)
                     const valueInEth = parseFloat(ethers.formatEther(tx.value));
                     
                     // Only consider as bribe if:
-                    // 1. Value > 0.001 ETH (minimum threshold)
-                    // 2. Not going to a known DeFi contract
-                    // 3. Going to an unknown address (potential validator/builder)
+                    // 1. Value > 0.001 ETH (any amount above dust)
+                    // 2. Not going to a known DeFi contract or MEV bot
+                    // 3. Going to a validator/builder address (not a contract)
                     if (valueInEth > 0.001) {
-                        // Additional check: if it's going to a very short/simple address, likely a validator
-                        const isSimpleAddress = toAddress.match(/^0x[0-9a-f]{1,10}0{30,}$/);
-                        const isValidatorLike = toAddress.length === 42 && !legitimateAddresses.has(toAddress);
+                        // Check if destination looks like a validator/builder
+                        const isValidatorLike = 
+                            !legitimateAddresses.has(toAddress) &&
+                            !toAddress.includes('3328f7f4') && // Not Banana Gun
+                            !toAddress.includes('uniswap') &&
+                            toAddress.length === 42 && // Valid ETH address
+                            tx.type !== 'staticcall'; // Not a view call
                         
-                        if (isValidatorLike || isSimpleAddress) {
-                            console.log(`🔍 Potential bribe detected: ${valueInEth} ETH to ${toAddress}`);
+                        // Additional check: get block info to see if it's the coinbase (validator)
+                        // For now, assume unknown addresses receiving ETH are potential bribes
+                        if (isValidatorLike) {
+                            console.log(`🔍 Potential bribe detected: ${valueInEth} ETH to ${toAddress} (possible validator/builder)`);
                             totalBribe += valueInEth;
                         }
                     }
@@ -343,7 +358,7 @@ class SimpleTokenAnalyzer {
             if (snipingBuyers.length > 0) {
                 message += `🎯 **First bribe at rank ${bundleEndRank + 1}** - bundle ends here\n`;
             }
-            message += `🤖 **Bundled launch confirmed**\n\n`;
+            message += `🤖 **Coordinated launch confirmed**\n\n`;
         }
 
         // Select requested range from ALL buyers (bundled + snipers)
