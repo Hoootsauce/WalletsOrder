@@ -109,26 +109,53 @@ class SimpleTokenAnalyzer {
             });
             
             if (response.data.status === '1' && response.data.result) {
-                // Look for ETH transfers (potential bribes)
                 const internalTxs = response.data.result;
                 let totalBribe = 0;
+                
+                // Known addresses that are NOT bribes (normal DeFi operations)
+                const legitimateAddresses = new Set([
+                    '0x7a250d5630b4cf539739df2c5dacb4c659f2488d', // Uniswap V2 Router
+                    '0xe592427a0aece92de3edee1f18e0157c05861564', // Uniswap V3 Router
+                    '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45', // Uniswap V3 Router 2
+                    '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', // WETH
+                    '0xa0b86a33e6dd3d49f8c5c31c1ed1c5478d9fc59f', // WETH9
+                    '0x1111111254eeb25477b68fb85ed929f73a960582', // 1inch
+                    '0xdef1c0ded9bec7f1a1670819833240f027b25eff'  // 0x Protocol
+                ]);
                 
                 for (const tx of internalTxs) {
                     // Skip if no value or zero value
                     if (!tx.value || tx.value === '0') continue;
                     
-                    // Skip normal contract interactions (to/from token contracts, routers, etc.)
-                    const isNormalSwap = 
-                        tx.to.toLowerCase().includes('7a250d5630b4cf539739df2c5dacb4c659f2488d') || // Uniswap V2 Router
-                        tx.to.toLowerCase().includes('e592427a0aece92de3edee1f18e0157c05861564') || // Uniswap V3 Router
-                        tx.to.toLowerCase().includes('c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'); // WETH
+                    const toAddress = tx.to.toLowerCase();
+                    const fromAddress = tx.from.toLowerCase();
                     
-                    if (isNormalSwap) continue;
+                    // Skip normal DeFi operations (swaps, deposits, etc.)
+                    if (legitimateAddresses.has(toAddress) || legitimateAddresses.has(fromAddress)) {
+                        continue;
+                    }
                     
-                    // Potential bribe = ETH transfer to unknown address
+                    // Skip transactions between known contracts
+                    if (tx.type === 'call' && (toAddress.startsWith('0xc02aaa') || toAddress.includes('uniswap'))) {
+                        continue;
+                    }
+                    
+                    // Check if it's a potential bribe (ETH to unknown EOA or builder)
                     const valueInEth = parseFloat(ethers.formatEther(tx.value));
-                    if (valueInEth > 0.001) { // Minimum 0.001 ETH to be considered a bribe
-                        totalBribe += valueInEth;
+                    
+                    // Only consider as bribe if:
+                    // 1. Value > 0.001 ETH (minimum threshold)
+                    // 2. Not going to a known DeFi contract
+                    // 3. Going to an unknown address (potential validator/builder)
+                    if (valueInEth > 0.001) {
+                        // Additional check: if it's going to a very short/simple address, likely a validator
+                        const isSimpleAddress = toAddress.match(/^0x[0-9a-f]{1,10}0{30,}$/);
+                        const isValidatorLike = toAddress.length === 42 && !legitimateAddresses.has(toAddress);
+                        
+                        if (isValidatorLike || isSimpleAddress) {
+                            console.log(`🔍 Potential bribe detected: ${valueInEth} ETH to ${toAddress}`);
+                            totalBribe += valueInEth;
+                        }
                     }
                 }
                 
