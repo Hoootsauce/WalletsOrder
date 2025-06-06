@@ -95,92 +95,34 @@ class SimpleTokenAnalyzer {
         }
     }
 
-    async getTransactionBribe(txHash) {
+    async getTransactionDetails(txHash) {
         try {
-            // Get internal transactions to detect bribes (ETH transfers)
             const response = await axios.get('https://api.etherscan.io/api', {
                 params: {
-                    module: 'account',
-                    action: 'txlistinternal',
+                    module: 'proxy',
+                    action: 'eth_getTransactionByHash',
                     txhash: txHash,
                     apikey: ETHERSCAN_API_KEY
                 },
                 timeout: 10000
             });
             
-            if (response.data.status === '1' && response.data.result) {
-                const internalTxs = response.data.result;
-                let totalBribe = 0;
+            if (response.data.result) {
+                const tx = response.data.result;
+                const gasPrice = parseInt(tx.gasPrice, 16);
+                const maxPriorityFee = tx.maxPriorityFeePerGas ? parseInt(tx.maxPriorityFeePerGas, 16) : 0;
                 
-                // Known addresses that are NOT bribes (normal DeFi operations + MEV bots)
-                const legitimateAddresses = new Set([
-                    '0x7a250d5630b4cf539739df2c5dacb4c659f2488d', // Uniswap V2 Router
-                    '0xe592427a0aece92de3edee1f18e0157c05861564', // Uniswap V3 Router
-                    '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45', // Uniswap V3 Router 2
-                    '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', // WETH
-                    '0xa0b86a33e6dd3d49f8c5c31c1ed1c5478d9fc59f', // WETH9
-                    '0x1111111254eeb25477b68fb85ed929f73a960582', // 1inch
-                    '0xdef1c0ded9bec7f1a1670819833240f027b25eff', // 0x Protocol
-                    '0x3328f7f4a1d1c57c35df56bbf0c9dcafca309c49', // Banana Gun Router
-                    '0x00000000a991c429ee2ec6df19d40fe0c80088b8', // Banana Gun Router 2
-                    '0x37a8f295612602f2774d331e562be9e61b83a327', // Maestro Router
-                    '0x6131b5fae19ea4f9d964eac0408e4408b66337b5'  // BonkBot Router
-                ]);
-                
-                for (const tx of internalTxs) {
-                    // Skip if no value or zero value
-                    if (!tx.value || tx.value === '0') continue;
-                    
-                    const toAddress = tx.to.toLowerCase();
-                    const fromAddress = tx.from.toLowerCase();
-                    
-                    // Skip normal DeFi operations (swaps, deposits, etc.) and MEV bots
-                    if (legitimateAddresses.has(toAddress) || legitimateAddresses.has(fromAddress)) {
-                        continue;
-                    }
-                    
-                    // Skip transactions between known contracts and MEV bot interactions
-                    if (tx.type === 'call' && (
-                        toAddress.startsWith('0xc02aaa') || 
-                        toAddress.includes('uniswap') ||
-                        toAddress.includes('3328f7f4') || // Banana Gun patterns
-                        fromAddress.includes('3328f7f4')
-                    )) {
-                        continue;
-                    }
-                    
-                    // Check if it's a potential bribe (ETH to validator/builder)
-                    const valueInEth = parseFloat(ethers.formatEther(tx.value));
-                    
-                    // Only consider as bribe if:
-                    // 1. Value > 0.001 ETH (any amount above dust)
-                    // 2. Not going to a known DeFi contract or MEV bot
-                    // 3. Going to a validator/builder address (not a contract)
-                    if (valueInEth > 0.001) {
-                        // Check if destination looks like a validator/builder
-                        const isValidatorLike = 
-                            !legitimateAddresses.has(toAddress) &&
-                            !toAddress.includes('3328f7f4') && // Not Banana Gun
-                            !toAddress.includes('uniswap') &&
-                            toAddress.length === 42 && // Valid ETH address
-                            tx.type !== 'staticcall'; // Not a view call
-                        
-                        // Additional check: get block info to see if it's the coinbase (validator)
-                        // For now, assume unknown addresses receiving ETH are potential bribes
-                        if (isValidatorLike) {
-                            console.log(`🔍 Potential bribe detected: ${valueInEth} ETH to ${toAddress} (possible validator/builder)`);
-                            totalBribe += valueInEth;
-                        }
-                    }
-                }
-                
-                return totalBribe;
+                return {
+                    gasPrice: (gasPrice / 1e9).toFixed(1),
+                    priorityFee: (maxPriorityFee / 1e9).toFixed(1),
+                    transactionIndex: parseInt(tx.transactionIndex, 16)
+                };
             }
             
-            return 0;
+            return { gasPrice: 'N/A', priorityFee: '0', transactionIndex: 999 };
         } catch (error) {
-            console.warn(`⚠️ Bribe detection failed for ${txHash}:`, error.message);
-            return 0;
+            console.warn(`⚠️ Gas details failed for ${txHash}:`, error.message);
+            return { gasPrice: 'N/A', priorityFee: '0', transactionIndex: 999 };
         }
     }
 
@@ -263,18 +205,10 @@ class SimpleTokenAnalyzer {
                     supplyPercent = 0;
                 }
                 
-                // Detect real bribe only until we find the first one + 4 more (total 5 bribes)
-                let bribeAmount = 0;
-                
-                // Check if we already found the end of bundle in previous iterations
-                const bundleEndFound = results.some(r => r.bribe > 0);
-                const bribesFound = results.filter(r => r.bribe > 0).length;
-                
-                if ((!bundleEndFound || bribesFound < 5) && results.length < 50) { // Check until 5 bribes found
-                    bribeAmount = await this.getTransactionBribe(tx.hash);
-                    if (bribeAmount > 0) {
-                        console.log(`🔍 Bribe #${bribesFound + 1} detected at position ${results.length + 1}: ${bribeAmount} ETH`);
-                    }
+                // Get gas details for pattern analysis (first 50 buyers)
+                let gasDetails = { gasPrice: 'N/A', priorityFee: '0', transactionIndex: 999 };
+                if (results.length < 50) {
+                    gasDetails = await this.getTransactionDetails(tx.hash);
                 }
                 
                 results.push({
@@ -285,7 +219,9 @@ class SimpleTokenAnalyzer {
                     txHash: tx.hash,
                     timestamp: new Date(parseInt(tx.timeStamp) * 1000),
                     blockNumber: parseInt(tx.blockNumber),
-                    bribe: bribeAmount
+                    gasPrice: parseFloat(gasDetails.gasPrice) || 0,
+                    priorityFee: parseFloat(gasDetails.priorityFee) || 0,
+                    transactionIndex: gasDetails.transactionIndex
                 });
 
                 console.log(`✅ Buyer #${results.length}: ${tx.to} = ${amount.toLocaleString()} ${tokenInfo.symbol} (${supplyPercent.toFixed(2)}%)`);
@@ -333,20 +269,48 @@ class SimpleTokenAnalyzer {
         
         message += `📝 [Contract](https://etherscan.io/token/${contractAddress})\n\n`;
 
-        // Detect bundle vs snipers based on REAL BRIBES
-        // Bundle = all buyers BEFORE the first bribe is detected
-        let bundleEndRank = buyers.length; // Default: all are bundled if no bribe found
+        // Detect bundle vs snipers based on GAS PATTERNS and POSITION
+        let bundleEndRank = filteredResults.length; // Default: all are bundled if no pattern found
         
-        for (let i = 0; i < buyers.length; i++) {
-            if (buyers[i].bribe > 0) {
-                bundleEndRank = buyers[i].rank - 1; // Bundle ends just before first bribe
-                console.log(`🔍 Bundle ends at rank ${bundleEndRank}, first bribe at rank ${buyers[i].rank}`);
+        // Analyze gas patterns to detect bundle end
+        for (let i = 1; i < filteredResults.length; i++) {
+            const current = filteredResults[i];
+            const previous = filteredResults[i - 1];
+            
+            // Look for significant gas price jump (bundle → sniper transition)
+            const gasJump = current.gasPrice > previous.gasPrice * 2; // 2x increase
+            const priorityJump = current.priorityFee > previous.priorityFee * 3; // 3x increase
+            const positionJump = current.transactionIndex > previous.transactionIndex + 20; // Big position gap
+            
+            // Bundle likely ends when we see a significant jump in gas/priority/position
+            if ((gasJump && current.gasPrice > 10) || (priorityJump && current.priorityFee > 5) || positionJump) {
+                bundleEndRank = i; // Bundle ends at previous buyer
+                console.log(`🔍 Bundle end detected at rank ${bundleEndRank}:`);
+                console.log(`   Previous: ${previous.gasPrice} Gwei, priority ${previous.priorityFee}, position ${previous.transactionIndex}`);
+                console.log(`   Current: ${current.gasPrice} Gwei, priority ${current.priorityFee}, position ${current.transactionIndex}`);
                 break;
             }
         }
         
-        const bundledBuyers = buyers.filter(buyer => buyer.rank <= bundleEndRank);
-        const snipingBuyers = buyers.filter(buyer => buyer.rank > bundleEndRank);
+        // Alternative detection: look for consistent low gas in early positions
+        const earlyBuyers = filteredResults.slice(0, Math.min(20, filteredResults.length));
+        const avgEarlyGas = earlyBuyers.reduce((sum, buyer) => sum + buyer.gasPrice, 0) / earlyBuyers.length;
+        
+        // If no clear jump found, use gas threshold method
+        if (bundleEndRank === filteredResults.length && avgEarlyGas < 15) {
+            for (let i = 0; i < filteredResults.length; i++) {
+                const buyer = filteredResults[i];
+                // Bundle likely ends when gas becomes significantly higher than average
+                if (buyer.gasPrice > avgEarlyGas * 3 && buyer.gasPrice > 20) {
+                    bundleEndRank = i;
+                    console.log(`🔍 Bundle end detected via gas threshold at rank ${bundleEndRank + 1}`);
+                    break;
+                }
+            }
+        }
+        
+        const bundledBuyers = filteredResults.filter(buyer => buyer.rank <= bundleEndRank);
+        const snipingBuyers = filteredResults.filter(buyer => buyer.rank > bundleEndRank);
         
         // Show bundle detection info
         if (bundledBuyers.length > 1) {
@@ -356,9 +320,10 @@ class SimpleTokenAnalyzer {
             message += `⚠️ **BUNDLE DETECTED:** ${bundledBuyers.length} wallets (ranks 1-${bundleEndRank})\n`;
             message += `🎒 **Bundled Supply:** ${totalBundledSupply.toFixed(2)}% of total supply\n`;
             if (snipingBuyers.length > 0) {
-                message += `🎯 **First bribe at rank ${bundleEndRank + 1}** - bundle ends here\n`;
+                const firstSniper = snipingBuyers[0];
+                message += `🎯 **First sniper at rank ${firstSniper.rank}** (${firstSniper.gasPrice} Gwei)\n`;
             }
-            message += `🤖 **Coordinated launch confirmed**\n\n`;
+            message += `🤖 **Pattern-based detection**\n\n`;
         }
 
         // Select requested range from ALL buyers (bundled + snipers)
