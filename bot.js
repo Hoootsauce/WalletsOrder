@@ -168,7 +168,7 @@ class SimpleTokenAnalyzer {
         }
     }
 
-    async analyzeFirstBuyers(contractAddress, limit = 50) {
+    async analyzeFirstBuyers(contractAddress, limit = 100) {
         console.log(`🚀 Starting analysis ${contractAddress}`);
         
         const tokenInfo = await this.getTokenInfo(contractAddress);
@@ -214,9 +214,9 @@ class SimpleTokenAnalyzer {
                     supplyPercent = 0;
                 }
                 
-                // Get gas details for first 50 buyers
+                // Get gas details for first 100 buyers
                 let gasDetails = { gasPrice: 'N/A', priorityFee: '0', transactionIndex: 999 };
-                if (results.length < 50) {
+                if (results.length < 100) {
                     gasDetails = await this.getTransactionDetails(tx.hash);
                 }
                 
@@ -452,7 +452,7 @@ bot.onText(/^(0x[a-fA-F0-9]{40})(?:\s+(\d+)-(\d+))?$/, async (msg, match) => {
             `🔍 Analysis in progress...\n⏳ Getting buyers ${startRank}-${endRank}`
         );
         
-        const results = await analyzer.analyzeFirstBuyers(contractAddress, Math.max(endRank, 50));
+        const results = await analyzer.analyzeFirstBuyers(contractAddress, Math.max(endRank, 100));
         const message = analyzer.formatResults(results, startRank, endRank);
         
         await bot.deleteMessage(chatId, loadingMsg.message_id);
