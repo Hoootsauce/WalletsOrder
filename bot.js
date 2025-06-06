@@ -251,29 +251,82 @@ class SimpleTokenAnalyzer {
         }
         
         message += `📝 [Contract](https://etherscan.io/token/${contractAddress})\n\n`;
+
+        // Detect bundle (same block as first buyer)
+        const firstBlock = buyers.length > 0 ? buyers[0].blockNumber : 0;
+        const bundledBuyers = buyers.filter(buyer => buyer.blockNumber === firstBlock);
+        const publicBuyers = buyers.filter(buyer => buyer.blockNumber !== firstBlock);
+        
+        // Show bundle warning if multiple buyers in first block
+        if (bundledBuyers.length > 1) {
+            message += `⚠️ **BUNDLE DETECTED:** ${bundledBuyers.length} wallets in block ${firstBlock}\n`;
+            message += `🤖 **Potential coordinated launch**\n\n`;
+        }
+
+        // Select requested range from ALL buyers (bundled + public)
+        const allBuyers = [...bundledBuyers, ...publicBuyers];
+        const displayBuyers = allBuyers.slice(startRank - 1, endRank);
+        
         message += `📊 **Buyers ${startRank}-${Math.min(endRank, buyers.length)} of ${buyers.length} total**\n\n`;
 
-        // Select requested range
-        const displayBuyers = buyers.slice(startRank - 1, endRank);
+        // Group display by bundled vs public within the requested range
+        const displayBundled = displayBuyers.filter(buyer => buyer.blockNumber === firstBlock);
+        const displayPublic = displayBuyers.filter(buyer => buyer.blockNumber !== firstBlock);
 
-        displayBuyers.forEach((buyer) => {
-            const shortAddr = `${buyer.wallet.slice(0, 6)}...${buyer.wallet.slice(-4)}`;
-            
-            message += `**${buyer.rank}.** [${shortAddr}](https://etherscan.io/address/${buyer.wallet})\n`;
-            message += `   💰 ${buyer.amount.toLocaleString('en-US', {maximumFractionDigits: 0})} ${tokenInfo.symbol}`;
-            
-            // Add supply percentage if available
-            if (buyer.supplyPercent > 0) {
-                if (buyer.supplyPercent >= 0.01) {
-                    message += ` **(${buyer.supplyPercent.toFixed(2)}% supply)**`;
-                } else {
-                    message += ` **(${buyer.supplyPercent.toFixed(4)}% supply)**`;
-                }
+        // Show bundled buyers first (if any in range)
+        if (displayBundled.length > 0) {
+            if (bundledBuyers.length > 1) {
+                message += `🤖 **Bundled Buyers** (block ${firstBlock}):\n`;
             }
-            message += '\n';
             
-            message += `   🔗 [TX](https://etherscan.io/tx/${buyer.txHash})\n\n`;
-        });
+            displayBundled.forEach((buyer) => {
+                const shortAddr = `${buyer.wallet.slice(0, 6)}...${buyer.wallet.slice(-4)}`;
+                
+                message += `**${buyer.rank}.** [${shortAddr}](https://etherscan.io/address/${buyer.wallet})`;
+                if (bundledBuyers.length > 1) message += ` 🤖`;
+                message += `\n`;
+                
+                message += `   💰 ${buyer.amount.toLocaleString('en-US', {maximumFractionDigits: 0})} ${tokenInfo.symbol}`;
+                
+                // Add supply percentage if available
+                if (buyer.supplyPercent > 0) {
+                    if (buyer.supplyPercent >= 0.01) {
+                        message += ` **(${buyer.supplyPercent.toFixed(2)}% supply)**`;
+                    } else {
+                        message += ` **(${buyer.supplyPercent.toFixed(4)}% supply)**`;
+                    }
+                }
+                message += '\n';
+                
+                message += `   🔗 [TX](https://etherscan.io/tx/${buyer.txHash})\n\n`;
+            });
+        }
+
+        // Show public buyers (if any in range)
+        if (displayPublic.length > 0) {
+            if (bundledBuyers.length > 1 && displayBundled.length > 0) {
+                message += `📊 **Public Buyers:**\n`;
+            }
+            
+            displayPublic.forEach((buyer) => {
+                const shortAddr = `${buyer.wallet.slice(0, 6)}...${buyer.wallet.slice(-4)}`;
+                
+                message += `**${buyer.rank}.** [${shortAddr}](https://etherscan.io/address/${buyer.wallet})\n`;
+                message += `   💰 ${buyer.amount.toLocaleString('en-US', {maximumFractionDigits: 0})} ${tokenInfo.symbol}`;
+                
+                // Add supply percentage if available
+                if (buyer.supplyPercent > 0) {
+                    if (buyer.supplyPercent >= 0.01) {
+                        message += ` **(${buyer.supplyPercent.toFixed(2)}% supply)**`;
+                    } else {
+                        message += ` **(${buyer.supplyPercent.toFixed(4)}% supply)**`;
+                    }
+                }
+                message += '\n';
+                
+                message += `   🔗 [TX](https://etherscan.io/tx/${buyer.txHash})\n\n`;
+            });
+        }
 
         // Instructions to see other ranges
         if (buyers.length > 10) {
