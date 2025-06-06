@@ -14,11 +14,27 @@ if (!TELEGRAM_BOT_TOKEN || !ETHEREUM_RPC_URL || !ETHERSCAN_API_KEY) {
     process.exit(1);
 }
 
-// Initialisation
+// Initialisation with retry and fallback
 const bot = new TelegramBot(TELEGRAM_BOT_TOKEN);
-const provider = new ethers.JsonRpcProvider(ETHEREUM_RPC_URL);
+let provider;
 
-// Serveur Express
+// Configuration du provider avec fallback
+try {
+    provider = new ethers.JsonRpcProvider(ETHEREUM_RPC_URL, {
+        name: 'mainnet',
+        chainId: 1
+    });
+    console.log('🔗 Provider configured with main URL');
+} catch (error) {
+    console.error('❌ Main provider error:', error);
+    provider = new ethers.JsonRpcProvider('https://rpc.ankr.com/eth', {
+        name: 'mainnet', 
+        chainId: 1
+    });
+    console.log('🔄 Fallback to public Ankr RPC');
+}
+
+// Express server
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -37,7 +53,7 @@ app.get('/', (req, res) => {
     `);
 });
 
-// ABI basique
+// Basic ABI
 const ERC20_ABI = [
     "function decimals() external view returns (uint8)",
     "function symbol() external view returns (string)",
@@ -54,7 +70,6 @@ class SimpleTokenAnalyzer {
         try {
             console.log(`🔍 Getting token info for: ${contractAddress}`);
             
-            // Simple method: direct reading
             const contract = new ethers.Contract(contractAddress, ERC20_ABI, this.provider);
             
             const [name, symbol, decimals, totalSupply] = await Promise.allSettled([
@@ -69,7 +84,6 @@ class SimpleTokenAnalyzer {
             const tokenDecimals = decimals.status === 'fulfilled' ? Number(decimals.value) : 18;
             const tokenTotalSupply = totalSupply.status === 'fulfilled' ? totalSupply.value : 0n;
             
-            // Convert supply to readable number
             let readableSupply = 0;
             if (tokenTotalSupply > 0n) {
                 readableSupply = parseFloat(ethers.formatUnits(tokenTotalSupply, tokenDecimals));
@@ -167,20 +181,17 @@ class SimpleTokenAnalyzer {
         const buyers = new Map();
         const results = [];
 
-        // Skip only really obvious addresses
         const skipAddresses = new Set([
             '0x7a250d5630b4cf539739df2c5dacb4c659f2488d', // Uniswap V2
             '0xe592427a0aece92de3edee1f18e0157c05861564', // Uniswap V3
-            contractAddress.toLowerCase() // The contract itself
+            contractAddress.toLowerCase()
         ]);
 
         for (const tx of transactions) {
-            // Skip mints
             if (tx.from === '0x0000000000000000000000000000000000000000') continue;
             
             const buyerAddress = tx.to.toLowerCase();
             
-            // Skip only real routers
             if (skipAddresses.has(buyerAddress)) {
                 console.log(`⚠️ Skip router: ${buyerAddress}`);
                 continue;
@@ -189,13 +200,11 @@ class SimpleTokenAnalyzer {
             if (!buyers.has(buyerAddress)) {
                 buyers.set(buyerAddress, true);
                 
-                // Simple amount calculation
                 let amount = 0;
                 let supplyPercent = 0;
                 try {
                     amount = parseFloat(ethers.formatUnits(tx.value, tokenInfo.decimals));
                     
-                    // Calculate supply % if we have total supply
                     if (tokenInfo.totalSupply > 0 && amount > 0) {
                         supplyPercent = (amount / tokenInfo.totalSupply) * 100;
                     }
@@ -205,7 +214,7 @@ class SimpleTokenAnalyzer {
                     supplyPercent = 0;
                 }
                 
-                // Get gas details for pattern analysis (first 50 buyers)
+                // Get gas details for first 50 buyers
                 let gasDetails = { gasPrice: 'N/A', priorityFee: '0', transactionIndex: 999 };
                 if (results.length < 50) {
                     gasDetails = await this.getTransactionDetails(tx.hash);
@@ -238,7 +247,7 @@ class SimpleTokenAnalyzer {
         let finalResults = results;
         if (results.length > 0 && results[0].supplyPercent > 50) {
             console.log(`🏊 Detected LP at rank 1 with ${results[0].supplyPercent.toFixed(2)}% supply - excluding from analysis`);
-            finalResults = results.slice(1); // Remove first buyer (LP)
+            finalResults = results.slice(1);
             
             // Rerank the remaining buyers
             finalResults = finalResults.map((buyer, index) => ({
@@ -256,12 +265,10 @@ class SimpleTokenAnalyzer {
         
         let message = `🪙 **${tokenInfo.name} (${tokenInfo.symbol})**\n\n`;
         
-        // Display total supply if available
         if (tokenInfo.totalSupply > 0) {
             message += `📈 **Total Supply:** ${tokenInfo.totalSupply.toLocaleString('en-US', {maximumFractionDigits: 0})} ${tokenInfo.symbol}\n`;
         }
         
-        // Add timestamp and block of first trade
         if (buyers.length > 0) {
             message += `📅 **Trading Started:** ${buyers[0].timestamp.toLocaleString('en-US')}\n`;
             message += `🧱 **Block:** [${buyers[0].blockNumber}](https://etherscan.io/txs?block=${buyers[0].blockNumber})\n`;
@@ -269,22 +276,20 @@ class SimpleTokenAnalyzer {
         
         message += `📝 [Contract](https://etherscan.io/token/${contractAddress})\n\n`;
 
-        // Detect bundle vs snipers based on GAS PATTERNS and POSITION
-        let bundleEndRank = filteredResults.length; // Default: all are bundled if no pattern found
+        // Detect bundle vs snipers based on GAS PATTERNS
+        let bundleEndRank = buyers.length;
         
         // Analyze gas patterns to detect bundle end
-        for (let i = 1; i < filteredResults.length; i++) {
-            const current = filteredResults[i];
-            const previous = filteredResults[i - 1];
+        for (let i = 1; i < buyers.length; i++) {
+            const current = buyers[i];
+            const previous = buyers[i - 1];
             
-            // Look for significant gas price jump (bundle → sniper transition)
-            const gasJump = current.gasPrice > previous.gasPrice * 2; // 2x increase
-            const priorityJump = current.priorityFee > previous.priorityFee * 3; // 3x increase
-            const positionJump = current.transactionIndex > previous.transactionIndex + 20; // Big position gap
+            const gasJump = current.gasPrice > previous.gasPrice * 2;
+            const priorityJump = current.priorityFee > previous.priorityFee * 3;
+            const positionJump = current.transactionIndex > previous.transactionIndex + 20;
             
-            // Bundle likely ends when we see a significant jump in gas/priority/position
             if ((gasJump && current.gasPrice > 10) || (priorityJump && current.priorityFee > 5) || positionJump) {
-                bundleEndRank = i; // Bundle ends at previous buyer
+                bundleEndRank = i;
                 console.log(`🔍 Bundle end detected at rank ${bundleEndRank}:`);
                 console.log(`   Previous: ${previous.gasPrice} Gwei, priority ${previous.priorityFee}, position ${previous.transactionIndex}`);
                 console.log(`   Current: ${current.gasPrice} Gwei, priority ${current.priorityFee}, position ${current.transactionIndex}`);
@@ -293,14 +298,12 @@ class SimpleTokenAnalyzer {
         }
         
         // Alternative detection: look for consistent low gas in early positions
-        const earlyBuyers = filteredResults.slice(0, Math.min(20, filteredResults.length));
+        const earlyBuyers = buyers.slice(0, Math.min(20, buyers.length));
         const avgEarlyGas = earlyBuyers.reduce((sum, buyer) => sum + buyer.gasPrice, 0) / earlyBuyers.length;
         
-        // If no clear jump found, use gas threshold method
-        if (bundleEndRank === filteredResults.length && avgEarlyGas < 15) {
-            for (let i = 0; i < filteredResults.length; i++) {
-                const buyer = filteredResults[i];
-                // Bundle likely ends when gas becomes significantly higher than average
+        if (bundleEndRank === buyers.length && avgEarlyGas < 15) {
+            for (let i = 0; i < buyers.length; i++) {
+                const buyer = buyers[i];
                 if (buyer.gasPrice > avgEarlyGas * 3 && buyer.gasPrice > 20) {
                     bundleEndRank = i;
                     console.log(`🔍 Bundle end detected via gas threshold at rank ${bundleEndRank + 1}`);
@@ -309,12 +312,11 @@ class SimpleTokenAnalyzer {
             }
         }
         
-        const bundledBuyers = filteredResults.filter(buyer => buyer.rank <= bundleEndRank);
-        const snipingBuyers = filteredResults.filter(buyer => buyer.rank > bundleEndRank);
+        const bundledBuyers = buyers.filter(buyer => buyer.rank <= bundleEndRank);
+        const snipingBuyers = buyers.filter(buyer => buyer.rank > bundleEndRank);
         
         // Show bundle detection info
         if (bundledBuyers.length > 1) {
-            // Calculate total supply bundled
             const totalBundledSupply = bundledBuyers.reduce((sum, buyer) => sum + buyer.supplyPercent, 0);
             
             message += `⚠️ **BUNDLE DETECTED:** ${bundledBuyers.length} wallets (ranks 1-${bundleEndRank})\n`;
@@ -326,20 +328,20 @@ class SimpleTokenAnalyzer {
             message += `🤖 **Pattern-based detection**\n\n`;
         }
 
-        // Select requested range from ALL buyers (bundled + snipers)
+        // Select requested range from ALL buyers
         const allBuyers = [...bundledBuyers, ...snipingBuyers];
         const displayBuyers = allBuyers.slice(startRank - 1, endRank);
         
-        message += `📊 **Buyers ${startRank}-${Math.min(endRank, filteredResults.length)} of ${filteredResults.length} total**\n\n`;
+        message += `📊 **Buyers ${startRank}-${Math.min(endRank, buyers.length)} of ${buyers.length} total**\n\n`;
 
         // Group display by bundled vs snipers within the requested range
         const displayBundled = displayBuyers.filter(buyer => buyer.rank <= bundleEndRank);
         const displaySnipers = displayBuyers.filter(buyer => buyer.rank > bundleEndRank);
 
-        // Show bundled buyers first (if any in range)
+        // Show bundled buyers first
         if (displayBundled.length > 0) {
             if (bundledBuyers.length > 1) {
-                message += `🤖 **Bundled Buyers** (no bribes):\n`;
+                message += `🤖 **Bundled Buyers** (low gas pattern):\n`;
             }
             
             displayBundled.forEach((buyer) => {
@@ -351,7 +353,6 @@ class SimpleTokenAnalyzer {
                 
                 message += `   💰 ${buyer.amount.toLocaleString('en-US', {maximumFractionDigits: 0})} ${tokenInfo.symbol}`;
                 
-                // Add supply percentage if available
                 if (buyer.supplyPercent > 0) {
                     if (buyer.supplyPercent >= 0.01) {
                         message += ` **(${buyer.supplyPercent.toFixed(2)}% supply)**`;
@@ -360,34 +361,28 @@ class SimpleTokenAnalyzer {
                     }
                 }
                 message += '\n';
+                
+                if (buyer.gasPrice > 0) {
+                    message += `   ⛽ ${buyer.gasPrice} Gwei (pos: ${buyer.transactionIndex})\n`;
+                }
                 
                 message += `   🔗 [TX](https://etherscan.io/tx/${buyer.txHash})\n\n`;
             });
         }
 
-        // Show sniping buyers (if any in range)
+        // Show sniping buyers
         if (displaySnipers.length > 0) {
             if (bundledBuyers.length > 1 && displayBundled.length > 0) {
-                message += `📊 **Sniping Buyers** (with bribes):\n`;
+                message += `📊 **Sniping Buyers** (high gas pattern):\n`;
             }
             
             displaySnipers.forEach((buyer) => {
                 const shortAddr = `${buyer.wallet.slice(0, 6)}...${buyer.wallet.slice(-4)}`;
                 
-                message += `**${buyer.rank}.** [${shortAddr}](https://etherscan.io/address/${buyer.wallet})`;
-                
-                // Show bribe amount if detected (for first 5 snipers)
-                if (buyer.bribe > 0) {
-                    message += ` 💸 **${buyer.bribe.toFixed(3)} ETH bribe**`;
-                } else if (buyer.rank > bundleEndRank) {
-                    // This is a sniper but we didn't check their bribe (beyond first 5)
-                    message += ` 🎯`;
-                }
-                message += `\n`;
+                message += `**${buyer.rank}.** [${shortAddr}](https://etherscan.io/address/${buyer.wallet}) 🎯\n`;
                 
                 message += `   💰 ${buyer.amount.toLocaleString('en-US', {maximumFractionDigits: 0})} ${tokenInfo.symbol}`;
                 
-                // Add supply percentage if available
                 if (buyer.supplyPercent > 0) {
                     if (buyer.supplyPercent >= 0.01) {
                         message += ` **(${buyer.supplyPercent.toFixed(2)}% supply)**`;
@@ -396,6 +391,14 @@ class SimpleTokenAnalyzer {
                     }
                 }
                 message += '\n';
+                
+                if (buyer.gasPrice > 0) {
+                    message += `   ⛽ ${buyer.gasPrice} Gwei`;
+                    if (buyer.priorityFee > 0) {
+                        message += ` (tip: +${buyer.priorityFee})`;
+                    }
+                    message += ` (pos: ${buyer.transactionIndex})\n`;
+                }
                 
                 message += `   🔗 [TX](https://etherscan.io/tx/${buyer.txHash})\n\n`;
             });
@@ -415,7 +418,7 @@ class SimpleTokenAnalyzer {
 
 const analyzer = new SimpleTokenAnalyzer();
 
-// Commandes du bot
+// Bot commands
 bot.onText(/\/start/, (msg) => {
     const welcomeMessage = `
 🤖 **Ethereum Token Analyzer**
@@ -445,7 +448,6 @@ bot.onText(/^(0x[a-fA-F0-9]{40})(?:\s+(\d+)-(\d+))?$/, async (msg, match) => {
         return;
     }
 
-    // Check if range is valid
     if (startRank < 1 || endRank < startRank || endRank > 100) {
         bot.sendMessage(chatId, '❌ Invalid range. Use: 1-10, 11-20, etc. (max 100)');
         return;
