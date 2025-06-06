@@ -23,35 +23,6 @@ try {
     provider = new ethers.JsonRpcProvider(ETHEREUM_RPC_URL, {
         name: 'mainnet',
         chainId: 1
-    async getTransactionDetails(txHash) {
-        try {
-            const response = await axios.get('https://api.etherscan.io/api', {
-                params: {
-                    module: 'proxy',
-                    action: 'eth_getTransactionByHash',
-                    txhash: txHash,
-                    apikey: ETHERSCAN_API_KEY
-                },
-                timeout: 10000
-            });
-            
-            if (response.data.result) {
-                const tx = response.data.result;
-                const gasPrice = parseInt(tx.gasPrice, 16);
-                const maxPriorityFee = tx.maxPriorityFeePerGas ? parseInt(tx.maxPriorityFeePerGas, 16) : 0;
-                
-                return {
-                    gasPrice: (gasPrice / 1e9).toFixed(1),
-                    priorityFee: (maxPriorityFee / 1e9).toFixed(1),
-                    transactionIndex: parseInt(tx.transactionIndex, 16)
-                };
-            }
-            
-            return { gasPrice: 'N/A', priorityFee: '0', transactionIndex: 999 };
-        } catch (error) {
-            console.warn(`⚠️ Gas details failed for ${txHash}:`, error.message);
-            return { gasPrice: 'N/A', priorityFee: '0', transactionIndex: 999 };
-        }
     });
     console.log('🔗 Provider configured with main URL');
 } catch (error) {
@@ -169,6 +140,8 @@ class SimpleTokenAnalyzer {
             return 0;
         }
     }
+
+    async getTransactionDetails(txHash) {
         try {
             const response = await axios.get('https://api.etherscan.io/api', {
                 params: {
@@ -343,7 +316,7 @@ class SimpleTokenAnalyzer {
         // Detect bundle vs snipers: CONSECUTIVE POSITIONS + SAME GAS
         let bundleEndRank = buyers.length;
         
-        // Bundle = positions consécutives + même gas que les précédents
+        // Bundle = même gas setting + positions STRICTEMENT consécutives
         for (let i = 1; i < buyers.length; i++) {
             const current = buyers[i];
             const previous = buyers[i - 1];
@@ -380,7 +353,7 @@ class SimpleTokenAnalyzer {
             message += `🎒 **Bundled Supply:** ${totalBundledSupply.toFixed(2)}% of total supply\n`;
             if (snipingBuyers.length > 0) {
                 const firstSniper = snipingBuyers[0];
-                message += `🎯 **First sniper at rank ${firstSniper.rank}** (${firstSniper.gasPrice} Gwei)\n`;
+                message += `🎯 **First sniper at rank ${firstSniper.rank}**\n`;
             }
             message += `🤖 **Consecutive positions + same gas pattern**\n\n`;
         }
