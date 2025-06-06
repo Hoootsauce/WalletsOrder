@@ -23,7 +23,7 @@ try {
     provider = new ethers.JsonRpcProvider(ETHEREUM_RPC_URL, {
         name: 'mainnet',
         chainId: 1
-    });
+    async getTransactionDetails(txHash) {);
     console.log('🔗 Provider configured with main URL');
 } catch (error) {
     console.error('❌ Main provider error:', error);
@@ -109,7 +109,37 @@ class SimpleTokenAnalyzer {
         }
     }
 
-    async getTransactionDetails(txHash) {
+    async getBribeAmount(txHash) {
+        try {
+            const response = await axios.get('https://api.etherscan.io/api', {
+                params: {
+                    module: 'account',
+                    action: 'txlistinternal',
+                    txhash: txHash,
+                    apikey: ETHERSCAN_API_KEY
+                },
+                timeout: 10000
+            });
+            
+            if (response.data.status === '1' && response.data.result) {
+                // Chercher les Transfer directs (pas les Deposit/Swap)
+                for (const tx of response.data.result) {
+                    // Transfer direct = input vide ou très court (pas un swap complexe)
+                    if (tx.input === '0x' || tx.input.length <= 10) {
+                        const bribeAmount = parseFloat(ethers.formatEther(tx.value));
+                        if (bribeAmount > 0) {
+                            return bribeAmount;
+                        }
+                    }
+                }
+            }
+            
+            return 0;
+        } catch (error) {
+            console.warn(`⚠️ Bribe detection failed for ${txHash}:`, error.message);
+            return 0;
+        }
+    }
         try {
             const response = await axios.get('https://api.etherscan.io/api', {
                 params: {
@@ -216,8 +246,12 @@ class SimpleTokenAnalyzer {
                 
                 // Get gas details for first 100 buyers
                 let gasDetails = { gasPrice: 'N/A', priorityFee: '0', transactionIndex: 999 };
+                let bribeAmount = 0;
+                
                 if (results.length < 100) {
                     gasDetails = await this.getTransactionDetails(tx.hash);
+                    // Get bribe amount for potential snipers (after we know if it's bundle or not)
+                    bribeAmount = await this.getBribeAmount(tx.hash);
                 }
                 
                 results.push({
@@ -230,7 +264,8 @@ class SimpleTokenAnalyzer {
                     blockNumber: parseInt(tx.blockNumber),
                     gasPrice: parseFloat(gasDetails.gasPrice) || 0,
                     priorityFee: parseFloat(gasDetails.priorityFee) || 0,
-                    transactionIndex: gasDetails.transactionIndex
+                    transactionIndex: gasDetails.transactionIndex,
+                    bribeAmount: bribeAmount
                 });
 
                 console.log(`✅ Buyer #${results.length}: ${tx.to} = ${amount.toLocaleString()} ${tokenInfo.symbol} (${supplyPercent.toFixed(2)}%)`);
@@ -356,7 +391,7 @@ class SimpleTokenAnalyzer {
                 message += '\n';
                 
                 if (buyer.gasPrice > 0) {
-                    message += `   ⛽ ${buyer.gasPrice} Gwei (pos: ${buyer.transactionIndex})\n`;
+                    message += `   📍 Block pos: ${buyer.transactionIndex}\n`;
                 }
                 
                 message += `   🔗 [TX](https://etherscan.io/tx/${buyer.txHash})\n\n`;
@@ -386,11 +421,12 @@ class SimpleTokenAnalyzer {
                 message += '\n';
                 
                 if (buyer.gasPrice > 0) {
-                    message += `   ⛽ ${buyer.gasPrice} Gwei`;
-                    if (buyer.priorityFee > 0) {
-                        message += ` (tip: +${buyer.priorityFee})`;
-                    }
-                    message += ` (pos: ${buyer.transactionIndex})\n`;
+                    message += `   📍 Block pos: ${buyer.transactionIndex}\n`;
+                }
+                
+                // Show bribe for first 10 snipers
+                if (buyer.bribeAmount > 0 && (buyer.rank - bundleEndRank) <= 10) {
+                    message += `   💰 Bribe: ${buyer.bribeAmount.toFixed(3)} ETH\n`;
                 }
                 
                 message += `   🔗 [TX](https://etherscan.io/tx/${buyer.txHash})\n\n`;
