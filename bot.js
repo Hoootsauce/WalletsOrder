@@ -283,8 +283,21 @@ class SimpleTokenAnalyzer {
             throw new Error('No buyers found');
         }
 
-        console.log(`🎯 ${results.length} buyers found`);
-        return { tokenInfo, buyers: results, contractAddress };
+        // Filter out LP (usually the first buyer with massive supply %)
+        let filteredResults = results;
+        if (results.length > 0 && results[0].supplyPercent > 50) {
+            console.log(`🏊 Detected LP at rank 1 with ${results[0].supplyPercent.toFixed(2)}% supply - excluding from analysis`);
+            filteredResults = results.slice(1); // Remove first buyer (LP)
+            
+            // Rerank the remaining buyers
+            filteredResults = filteredResults.map((buyer, index) => ({
+                ...buyer,
+                rank: index + 1
+            }));
+        }
+
+        console.log(`🎯 ${filteredResults.length} real buyers found (LP excluded)`);
+        return { tokenInfo, buyers: filteredResults, contractAddress };
     }
 
     formatResults(data, startRank = 1, endRank = 10) {
