@@ -276,10 +276,10 @@ class SimpleTokenAnalyzer {
         
         message += `📝 [Contract](https://etherscan.io/token/${contractAddress})\n\n`;
 
-        // Detect bundle vs snipers based on GAS CHANGE + CONSECUTIVE POSITIONS
+        // Detect bundle vs snipers: CONSECUTIVE POSITIONS + SAME GAS
         let bundleEndRank = buyers.length;
         
-        // Bundle = même gas setting + positions STRICTEMENT consécutives
+        // Bundle = positions consécutives + même gas que les précédents
         for (let i = 1; i < buyers.length; i++) {
             const current = buyers[i];
             const previous = buyers[i - 1];
@@ -288,15 +288,19 @@ class SimpleTokenAnalyzer {
             const positionGap = current.transactionIndex - previous.transactionIndex;
             const notConsecutive = positionGap > 1;
             
-            // Changement de gas (pas exactement le même)
+            // Gas différent (hausse ou baisse)
             const gasChange = Math.abs(current.gasPrice - previous.gasPrice) > 0.1;
             
-            // Fin du bundle = changement de gas ET positions non-consécutives
-            if (gasChange && notConsecutive) {
+            // Fin du bundle = dès que positions non-consécutives OU gas change
+            if (notConsecutive || gasChange) {
                 bundleEndRank = i;
                 console.log(`🔍 Bundle end detected at rank ${bundleEndRank}:`);
-                console.log(`   Gas change: ${previous.gasPrice} → ${current.gasPrice} Gwei`);
-                console.log(`   Position break: ${previous.transactionIndex} → ${current.transactionIndex} (gap: ${positionGap})`);
+                if (notConsecutive) {
+                    console.log(`   Position break: ${previous.transactionIndex} → ${current.transactionIndex} (gap: ${positionGap})`);
+                }
+                if (gasChange) {
+                    console.log(`   Gas change: ${previous.gasPrice} → ${current.gasPrice} Gwei`);
+                }
                 break;
             }
         }
@@ -362,7 +366,7 @@ class SimpleTokenAnalyzer {
         // Show sniping buyers
         if (displaySnipers.length > 0) {
             if (bundledBuyers.length > 1 && displayBundled.length > 0) {
-                message += `📊 **Sniping Buyers** (non-consecutive or different gas):\n`;
+                message += `📊 **Sniping Buyers** (position break or gas change):\n`;
             }
             
             displaySnipers.forEach((buyer) => {
