@@ -95,33 +95,50 @@ class SimpleTokenAnalyzer {
         }
     }
 
-    async getTransactionDetails(txHash) {
+    async getTransactionBribe(txHash) {
         try {
+            // Get internal transactions to detect bribes (ETH transfers)
             const response = await axios.get('https://api.etherscan.io/api', {
                 params: {
-                    module: 'proxy',
-                    action: 'eth_getTransactionByHash',
+                    module: 'account',
+                    action: 'txlistinternal',
                     txhash: txHash,
                     apikey: ETHERSCAN_API_KEY
                 },
                 timeout: 10000
             });
             
-            if (response.data.result) {
-                const tx = response.data.result;
-                const gasPrice = parseInt(tx.gasPrice, 16);
-                const maxPriorityFee = tx.maxPriorityFeePerGas ? parseInt(tx.maxPriorityFeePerGas, 16) : 0;
+            if (response.data.status === '1' && response.data.result) {
+                // Look for ETH transfers (potential bribes)
+                const internalTxs = response.data.result;
+                let totalBribe = 0;
                 
-                return {
-                    gasPrice: (gasPrice / 1e9).toFixed(1),
-                    priorityFee: (maxPriorityFee / 1e9).toFixed(1)
-                };
+                for (const tx of internalTxs) {
+                    // Skip if no value or zero value
+                    if (!tx.value || tx.value === '0') continue;
+                    
+                    // Skip normal contract interactions (to/from token contracts, routers, etc.)
+                    const isNormalSwap = 
+                        tx.to.toLowerCase().includes('7a250d5630b4cf539739df2c5dacb4c659f2488d') || // Uniswap V2 Router
+                        tx.to.toLowerCase().includes('e592427a0aece92de3edee1f18e0157c05861564') || // Uniswap V3 Router
+                        tx.to.toLowerCase().includes('c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'); // WETH
+                    
+                    if (isNormalSwap) continue;
+                    
+                    // Potential bribe = ETH transfer to unknown address
+                    const valueInEth = parseFloat(ethers.formatEther(tx.value));
+                    if (valueInEth > 0.001) { // Minimum 0.001 ETH to be considered a bribe
+                        totalBribe += valueInEth;
+                    }
+                }
+                
+                return totalBribe;
             }
             
-            return { gasPrice: 'N/A', priorityFee: '0' };
+            return 0;
         } catch (error) {
-            console.warn(`⚠️ Gas details failed for ${txHash}:`, error.message);
-            return { gasPrice: 'N/A', priorityFee: '0' };
+            console.warn(`⚠️ Bribe detection failed for ${txHash}:`, error.message);
+            return 0;
         }
     }
 
@@ -204,11 +221,11 @@ class SimpleTokenAnalyzer {
                     supplyPercent = 0;
                 }
                 
-                // Gas details for first 15 (optional now)
-                // let gasDetails = { gasPrice: 'N/A', priorityFee: '0' };
-                // if (results.length < 15) {
-                //     gasDetails = await this.getTransactionDetails(tx.hash);
-                // }
+                // Detect real bribe for the first 30 buyers (to avoid too many API calls)
+                let bribeAmount = 0;
+                if (results.length < 30) {
+                    bribeAmount = await this.getTransactionBribe(tx.hash);
+                }
                 
                 results.push({
                     rank: results.length + 1,
@@ -217,7 +234,8 @@ class SimpleTokenAnalyzer {
                     supplyPercent: supplyPercent,
                     txHash: tx.hash,
                     timestamp: new Date(parseInt(tx.timeStamp) * 1000),
-                    blockNumber: parseInt(tx.blockNumber)
+                    blockNumber: parseInt(tx.blockNumber),
+                    bribe: bribeAmount
                 });
 
                 console.log(`✅ Buyer #${results.length}: ${tx.to} = ${amount.toLocaleString()} ${tokenInfo.symbol} (${supplyPercent.toFixed(2)}%)`);
@@ -252,31 +270,31 @@ class SimpleTokenAnalyzer {
         
         message += `📝 [Contract](https://etherscan.io/token/${contractAddress})\n\n`;
 
-        // Detect bundle (same block as first buyer)
+        // Detect bundle vs snipers based on REAL BRIBES (not same block)
         const firstBlock = buyers.length > 0 ? buyers[0].blockNumber : 0;
-        const bundledBuyers = buyers.filter(buyer => buyer.blockNumber === firstBlock);
-        const publicBuyers = buyers.filter(buyer => buyer.blockNumber !== firstBlock);
+        const bundledBuyers = buyers.filter(buyer => buyer.bribe === 0); // No bribe = bundled
+        const snipingBuyers = buyers.filter(buyer => buyer.bribe > 0);   // With bribe = snipers
         
-        // Show bundle warning if multiple buyers in first block
+        // Show bundle warning if detected
         if (bundledBuyers.length > 1) {
-            message += `⚠️ **BUNDLE DETECTED:** ${bundledBuyers.length} wallets in block ${firstBlock}\n`;
-            message += `🤖 **Potential coordinated launch**\n\n`;
+            message += `⚠️ **BUNDLE DETECTED:** ${bundledBuyers.length} wallets without bribes\n`;
+            message += `🤖 **Coordinated launch suspected**\n\n`;
         }
 
-        // Select requested range from ALL buyers (bundled + public)
-        const allBuyers = [...bundledBuyers, ...publicBuyers];
+        // Select requested range from ALL buyers (bundled + snipers)
+        const allBuyers = [...bundledBuyers, ...snipingBuyers];
         const displayBuyers = allBuyers.slice(startRank - 1, endRank);
         
         message += `📊 **Buyers ${startRank}-${Math.min(endRank, buyers.length)} of ${buyers.length} total**\n\n`;
 
-        // Group display by bundled vs public within the requested range
-        const displayBundled = displayBuyers.filter(buyer => buyer.blockNumber === firstBlock);
-        const displayPublic = displayBuyers.filter(buyer => buyer.blockNumber !== firstBlock);
+        // Group display by bundled vs snipers within the requested range
+        const displayBundled = displayBuyers.filter(buyer => buyer.bribe === 0);
+        const displaySnipers = displayBuyers.filter(buyer => buyer.bribe > 0);
 
         // Show bundled buyers first (if any in range)
         if (displayBundled.length > 0) {
             if (bundledBuyers.length > 1) {
-                message += `🤖 **Bundled Buyers** (block ${firstBlock}):\n`;
+                message += `🤖 **Bundled Buyers** (no bribes):\n`;
             }
             
             displayBundled.forEach((buyer) => {
@@ -302,16 +320,21 @@ class SimpleTokenAnalyzer {
             });
         }
 
-        // Show public buyers (if any in range)
-        if (displayPublic.length > 0) {
+        // Show sniping buyers (if any in range)
+        if (displaySnipers.length > 0) {
             if (bundledBuyers.length > 1 && displayBundled.length > 0) {
-                message += `📊 **Public Buyers:**\n`;
+                message += `📊 **Sniping Buyers** (with bribes):\n`;
             }
             
-            displayPublic.forEach((buyer) => {
+            displaySnipers.forEach((buyer) => {
                 const shortAddr = `${buyer.wallet.slice(0, 6)}...${buyer.wallet.slice(-4)}`;
                 
-                message += `**${buyer.rank}.** [${shortAddr}](https://etherscan.io/address/${buyer.wallet})\n`;
+                message += `**${buyer.rank}.** [${shortAddr}](https://etherscan.io/address/${buyer.wallet})`;
+                if (buyer.bribe > 0) {
+                    message += ` 💸 (${buyer.bribe.toFixed(3)} ETH bribe)`;
+                }
+                message += `\n`;
+                
                 message += `   💰 ${buyer.amount.toLocaleString('en-US', {maximumFractionDigits: 0})} ${tokenInfo.symbol}`;
                 
                 // Add supply percentage if available
