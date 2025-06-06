@@ -276,39 +276,41 @@ class SimpleTokenAnalyzer {
         
         message += `📝 [Contract](https://etherscan.io/token/${contractAddress})\n\n`;
 
-        // Detect bundle vs snipers based on GAS PATTERNS
+        // Detect bundle vs snipers based on EXACT GAS PRICE and CONSECUTIVE POSITIONS
         let bundleEndRank = buyers.length;
         
-        // Analyze gas patterns to detect bundle end
-        for (let i = 1; i < buyers.length; i++) {
-            const current = buyers[i];
-            const previous = buyers[i - 1];
+        if (buyers.length > 1) {
+            const firstBuyer = buyers[0];
+            const firstGasPrice = firstBuyer.gasPrice;
+            const firstPosition = firstBuyer.transactionIndex;
             
-            const gasJump = current.gasPrice > previous.gasPrice * 2;
-            const priorityJump = current.priorityFee > previous.priorityFee * 3;
-            const positionJump = current.transactionIndex > previous.transactionIndex + 20;
+            console.log(`🔍 Starting bundle detection:`);
+            console.log(`   First buyer: ${firstGasPrice} Gwei, position ${firstPosition}`);
             
-            if ((gasJump && current.gasPrice > 10) || (priorityJump && current.priorityFee > 5) || positionJump) {
-                bundleEndRank = i;
-                console.log(`🔍 Bundle end detected at rank ${bundleEndRank}:`);
-                console.log(`   Previous: ${previous.gasPrice} Gwei, priority ${previous.priorityFee}, position ${previous.transactionIndex}`);
-                console.log(`   Current: ${current.gasPrice} Gwei, priority ${current.priorityFee}, position ${current.transactionIndex}`);
-                break;
-            }
-        }
-        
-        // Alternative detection: look for consistent low gas in early positions
-        const earlyBuyers = buyers.slice(0, Math.min(20, buyers.length));
-        const avgEarlyGas = earlyBuyers.reduce((sum, buyer) => sum + buyer.gasPrice, 0) / earlyBuyers.length;
-        
-        if (bundleEndRank === buyers.length && avgEarlyGas < 15) {
-            for (let i = 0; i < buyers.length; i++) {
-                const buyer = buyers[i];
-                if (buyer.gasPrice > avgEarlyGas * 3 && buyer.gasPrice > 20) {
-                    bundleEndRank = i;
-                    console.log(`🔍 Bundle end detected via gas threshold at rank ${bundleEndRank + 1}`);
+            // Find where the pattern breaks
+            for (let i = 1; i < buyers.length; i++) {
+                const current = buyers[i];
+                const previous = buyers[i - 1];
+                
+                // Bundle breaks if:
+                // 1. Gas price changes from the first buyer's gas price
+                // 2. Position is not consecutive (gap > 3 positions)
+                const gasPriceChanged = Math.abs(current.gasPrice - firstGasPrice) > 0.1; // Allow small floating point differences
+                const positionGap = current.transactionIndex - previous.transactionIndex > 3;
+                
+                if (gasPriceChanged || positionGap) {
+                    bundleEndRank = i; // Bundle ends at previous buyer
+                    console.log(`🔍 Bundle end detected at rank ${bundleEndRank}:`);
+                    console.log(`   Last bundled: ${previous.gasPrice} Gwei, position ${previous.transactionIndex}`);
+                    console.log(`   First sniper: ${current.gasPrice} Gwei, position ${current.transactionIndex}`);
+                    console.log(`   Reason: ${gasPriceChanged ? 'Gas price changed' : 'Position gap detected'}`);
                     break;
                 }
+            }
+            
+            // If all buyers have same gas and consecutive positions, they're all bundled
+            if (bundleEndRank === buyers.length) {
+                console.log(`🔍 All buyers appear to be bundled (same gas: ${firstGasPrice} Gwei)`);
             }
         }
         
