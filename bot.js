@@ -248,12 +248,9 @@ class SimpleTokenAnalyzer {
                 
                 // Get gas details for first 100 buyers
                 let gasDetails = { gasPrice: 'N/A', priorityFee: '0', transactionIndex: 999 };
-                let bribeAmount = 0;
                 
                 if (results.length < 100) {
                     gasDetails = await this.getTransactionDetails(tx.hash);
-                    // Get bribe amount for potential snipers (after we know if it's bundle or not)
-                    bribeAmount = await this.getBribeAmount(tx.hash);
                 }
                 
                 results.push({
@@ -266,8 +263,7 @@ class SimpleTokenAnalyzer {
                     blockNumber: parseInt(tx.blockNumber),
                     gasPrice: parseFloat(gasDetails.gasPrice) || 0,
                     priorityFee: parseFloat(gasDetails.priorityFee) || 0,
-                    transactionIndex: gasDetails.transactionIndex,
-                    bribeAmount: bribeAmount
+                    transactionIndex: gasDetails.transactionIndex
                 });
 
                 console.log(`✅ Buyer #${results.length}: ${tx.to} = ${amount.toLocaleString()} ${tokenInfo.symbol} (${supplyPercent.toFixed(2)}%)`);
@@ -355,7 +351,7 @@ class SimpleTokenAnalyzer {
                 const firstSniper = snipingBuyers[0];
                 message += `🎯 **First sniper at rank ${firstSniper.rank}**\n`;
             }
-            message += `🤖 **Consecutive positions + same gas pattern**\n\n`;
+            message += `\n`;
         }
 
         // Select requested range from ALL buyers
@@ -424,11 +420,6 @@ class SimpleTokenAnalyzer {
                 
                 if (buyer.gasPrice > 0) {
                     message += `   📍 Block pos: ${buyer.transactionIndex}\n`;
-                }
-                
-                // Show bribe for first 10 snipers
-                if (buyer.bribeAmount > 0 && (buyer.rank - bundleEndRank) <= 10) {
-                    message += `   💰 Bribe: ${buyer.bribeAmount.toFixed(3)} ETH\n`;
                 }
                 
                 message += `   🔗 [TX](https://etherscan.io/tx/${buyer.txHash})\n\n`;
