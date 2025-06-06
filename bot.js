@@ -330,7 +330,7 @@ class SimpleTokenAnalyzer {
         const allBuyers = [...bundledBuyers, ...snipingBuyers];
         const displayBuyers = allBuyers.slice(startRank - 1, endRank);
         
-        message += `📊 **Buyers ${startRank}-${Math.min(endRank, buyers.length)} of ${buyers.length} total**\n\n`;
+        message += `📊 **Buyers ${startRank}-${Math.min(endRank, filteredResults.length)} of ${filteredResults.length} total**\n\n`;
 
         // Group display by bundled vs snipers within the requested range
         const displayBundled = displayBuyers.filter(buyer => buyer.rank <= bundleEndRank);
