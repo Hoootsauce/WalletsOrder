@@ -221,10 +221,18 @@ class SimpleTokenAnalyzer {
                     supplyPercent = 0;
                 }
                 
-                // Detect real bribe for the first 30 buyers (to avoid too many API calls)
+                // Detect real bribe only until we find the first one + 4 more (total 5 bribes)
                 let bribeAmount = 0;
-                if (results.length < 30) {
+                
+                // Check if we already found the end of bundle in previous iterations
+                const bundleEndFound = results.some(r => r.bribe > 0);
+                const bribesFound = results.filter(r => r.bribe > 0).length;
+                
+                if ((!bundleEndFound || bribesFound < 5) && results.length < 50) { // Check until 5 bribes found
                     bribeAmount = await this.getTransactionBribe(tx.hash);
+                    if (bribeAmount > 0) {
+                        console.log(`🔍 Bribe #${bribesFound + 1} detected at position ${results.length + 1}: ${bribeAmount} ETH`);
+                    }
                 }
                 
                 results.push({
@@ -270,15 +278,28 @@ class SimpleTokenAnalyzer {
         
         message += `📝 [Contract](https://etherscan.io/token/${contractAddress})\n\n`;
 
-        // Detect bundle vs snipers based on REAL BRIBES (not same block)
-        const firstBlock = buyers.length > 0 ? buyers[0].blockNumber : 0;
-        const bundledBuyers = buyers.filter(buyer => buyer.bribe === 0); // No bribe = bundled
-        const snipingBuyers = buyers.filter(buyer => buyer.bribe > 0);   // With bribe = snipers
+        // Detect bundle vs snipers based on REAL BRIBES
+        // Bundle = all buyers BEFORE the first bribe is detected
+        let bundleEndRank = buyers.length; // Default: all are bundled if no bribe found
         
-        // Show bundle warning if detected
+        for (let i = 0; i < buyers.length; i++) {
+            if (buyers[i].bribe > 0) {
+                bundleEndRank = buyers[i].rank - 1; // Bundle ends just before first bribe
+                console.log(`🔍 Bundle ends at rank ${bundleEndRank}, first bribe at rank ${buyers[i].rank}`);
+                break;
+            }
+        }
+        
+        const bundledBuyers = buyers.filter(buyer => buyer.rank <= bundleEndRank);
+        const snipingBuyers = buyers.filter(buyer => buyer.rank > bundleEndRank);
+        
+        // Show bundle detection info
         if (bundledBuyers.length > 1) {
-            message += `⚠️ **BUNDLE DETECTED:** ${bundledBuyers.length} wallets without bribes\n`;
-            message += `🤖 **Coordinated launch suspected**\n\n`;
+            message += `⚠️ **BUNDLE DETECTED:** ${bundledBuyers.length} wallets (ranks 1-${bundleEndRank})\n`;
+            if (snipingBuyers.length > 0) {
+                message += `🎯 **First bribe at rank ${bundleEndRank + 1}** - bundle ends here\n`;
+            }
+            message += `🤖 **Coordinated launch confirmed**\n\n`;
         }
 
         // Select requested range from ALL buyers (bundled + snipers)
@@ -288,8 +309,8 @@ class SimpleTokenAnalyzer {
         message += `📊 **Buyers ${startRank}-${Math.min(endRank, buyers.length)} of ${buyers.length} total**\n\n`;
 
         // Group display by bundled vs snipers within the requested range
-        const displayBundled = displayBuyers.filter(buyer => buyer.bribe === 0);
-        const displaySnipers = displayBuyers.filter(buyer => buyer.bribe > 0);
+        const displayBundled = displayBuyers.filter(buyer => buyer.rank <= bundleEndRank);
+        const displaySnipers = displayBuyers.filter(buyer => buyer.rank > bundleEndRank);
 
         // Show bundled buyers first (if any in range)
         if (displayBundled.length > 0) {
@@ -330,8 +351,13 @@ class SimpleTokenAnalyzer {
                 const shortAddr = `${buyer.wallet.slice(0, 6)}...${buyer.wallet.slice(-4)}`;
                 
                 message += `**${buyer.rank}.** [${shortAddr}](https://etherscan.io/address/${buyer.wallet})`;
+                
+                // Show bribe amount if detected (for first 5 snipers)
                 if (buyer.bribe > 0) {
-                    message += ` 💸 (${buyer.bribe.toFixed(3)} ETH bribe)`;
+                    message += ` 💸 **${buyer.bribe.toFixed(3)} ETH bribe**`;
+                } else if (buyer.rank > bundleEndRank) {
+                    // This is a sniper but we didn't check their bribe (beyond first 5)
+                    message += ` 🎯`;
                 }
                 message += `\n`;
                 
